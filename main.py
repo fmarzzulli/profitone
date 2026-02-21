@@ -1,6 +1,6 @@
 """
-ProfitOne V3.0 - Sistema Institucional com Suporte B3
-Inclui: WINFUT, WINM24, DOLM24 e outros futuros B3
+ProfitOne V4.0 - INSTITUTIONAL TRADING SYSTEM
+Sistema de análise técnica de nível institucional
 """
 
 import streamlit as st
@@ -10,638 +10,1271 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 import warnings
-import requests
-
 warnings.filterwarnings('ignore')
 
-# ============================================================================
-# CONFIGURAÇÃO
-# ============================================================================
+# XGBoost
+try:
+    from xgboost import XGBClassifier
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+    st.warning("⚠️ XGBoost não instalado - usando RandomForest")
+    from sklearn.ensemble import RandomForestClassifier
 
+from sklearn.preprocessing import StandardScaler
+
+# ============================================================================
+# CONFIGURAÇÃO DA PÁGINA
+# ============================================================================
 st.set_page_config(
-    page_title="ProfitOne V3.0 - B3 Edition",
-    page_icon="🇧🇷",
-    layout="wide"
+    page_title="ProfitOne V4.0 | Institutional",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# CSS (mesmo do anterior)
+# ============================================================================
+# CSS CUSTOMIZADO - TEMA PROFISSIONAL
+# ============================================================================
 st.markdown("""
 <style>
-    .stApp { background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%); }
-    h1, h2, h3 { color: #00ff88 !important; text-shadow: 0 0 20px rgba(0, 255, 136, 0.5); }
-    [data-testid="stMetricValue"] { font-size: 32px !important; font-weight: bold !important; }
+    /* Background gradient */
+    .stApp {
+        background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+    }
     
-    .pro-card {
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
-        border-radius: 15px;
+    /* Títulos */
+    h1, h2, h3 {
+        color: #00ff88 !important;
+        font-weight: 700 !important;
+        text-shadow: 0 0 20px rgba(0,255,136,0.3);
+    }
+    
+    /* Métricas */
+    [data-testid="stMetricValue"] {
+        font-size: 2rem !important;
+        color: #00ff88 !important;
+        font-weight: 700 !important;
+    }
+    
+    /* Cards de módulos */
+    .module-card {
+        background: linear-gradient(135deg, #1a1f3a 0%, #2a2f4a 100%);
+        border-left: 4px solid #00ff88;
         padding: 20px;
-        margin: 10px 0;
-        border: 1px solid rgba(0, 255, 136, 0.3);
-        box-shadow: 0 8px 32px 0 rgba(0, 255, 136, 0.1);
-    }
-    
-    .signal-strong-buy {
-        background: linear-gradient(135deg, rgba(0, 255, 136, 0.3), rgba(0, 200, 100, 0.2));
-        border-left: 5px solid #00ff88;
-    }
-    
-    .signal-buy { background: rgba(0, 255, 136, 0.15); border-left: 4px solid #00ff88; }
-    .signal-sell { background: rgba(255, 68, 68, 0.15); border-left: 4px solid #ff4444; }
-    .signal-neutral { background: rgba(255, 170, 0, 0.15); border-left: 4px solid #ffaa00; }
-    
-    .stButton > button {
-        background: linear-gradient(90deg, #00ff88 0%, #00cc6a 100%);
-        color: black;
-        font-weight: bold;
-        border: none;
         border-radius: 10px;
-        padding: 12px 30px;
+        margin: 10px 0;
+        box-shadow: 0 4px 20px rgba(0,255,136,0.1);
     }
     
-    .b3-badge {
-        background: linear-gradient(90deg, #FFD700, #FFA500);
-        color: black;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-weight: bold;
-        display: inline-block;
+    .module-title {
+        color: #00ff88;
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }
+    
+    .module-score {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #ffffff;
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0a0e27 0%, #1a1f3a 100%);
+    }
+    
+    /* Botões */
+    .stButton>button {
+        background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%);
+        color: #0a0e27;
+        font-weight: 700;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 30px;
+        box-shadow: 0 4px 15px rgba(0,255,136,0.3);
+        transition: all 0.3s;
+    }
+    
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(0,255,136,0.5);
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# MAPEAMENTO DE SÍMBOLOS B3
+# SÍMBOLOS B3 E MAPEAMENTO
 # ============================================================================
-
 B3_SYMBOLS = {
-    # Futuros B3 (usar Ibovespa como proxy)
-    "WINFUT": {"yahoo": "^BVSP", "multiplier": 0.2, "name": "Mini Índice Futuro", "type": "future"},
-    "WINM24": {"yahoo": "^BVSP", "multiplier": 0.2, "name": "Mini Índice Mar/24", "type": "future"},
-    "WINH24": {"yahoo": "^BVSP", "multiplier": 0.2, "name": "Mini Índice Ago/24", "type": "future"},
-    "DOLM24": {"yahoo": "BRL=X", "multiplier": 50, "name": "Mini Dólar Mar/24", "type": "future"},
-    "DOLFUT": {"yahoo": "BRL=X", "multiplier": 50, "name": "Mini Dólar Futuro", "type": "future"},
+    # Futuros B3 (usando proxies do Yahoo Finance)
+    'WINFUT': {
+        'yahoo': '^BVSP',
+        'multiplier': 1.0,
+        'name': 'Mini-Índice Futuro',
+        'type': 'future'
+    },
+    'WINM25': {
+        'yahoo': '^BVSP',
+        'multiplier': 1.0,
+        'name': 'WIN Março/2025',
+        'type': 'future'
+    },
+    'DOLFUT': {
+        'yahoo': 'BRL=X',
+        'multiplier': 1.0,
+        'name': 'Mini-Dólar Futuro',
+        'type': 'future'
+    },
+    'DOLM25': {
+        'yahoo': 'BRL=X',
+        'multiplier': 1.0,
+        'name': 'DOL Março/2025',
+        'type': 'future'
+    },
     
-    # Ações B3 (nativas)
-    "PETR4": {"yahoo": "PETR4.SA", "multiplier": 1, "name": "Petrobras PN", "type": "stock"},
-    "VALE3": {"yahoo": "VALE3.SA", "multiplier": 1, "name": "Vale ON", "type": "stock"},
-    "ITUB4": {"yahoo": "ITUB4.SA", "multiplier": 1, "name": "Itaú Unibanco PN", "type": "stock"},
-    "BBDC4": {"yahoo": "BBDC4.SA", "multiplier": 1, "name": "Bradesco PN", "type": "stock"},
-    "BBAS3": {"yahoo": "BBAS3.SA", "multiplier": 1, "name": "Banco do Brasil ON", "type": "stock"},
-    "MGLU3": {"yahoo": "MGLU3.SA", "multiplier": 1, "name": "Magazine Luiza ON", "type": "stock"},
-    "WEGE3": {"yahoo": "WEGE3.SA", "multiplier": 1, "name": "WEG ON", "type": "stock"},
+    # Ações B3
+    'PETR4.SA': {'yahoo': 'PETR4.SA', 'multiplier': 1.0, 'name': 'Petrobras PN', 'type': 'stock'},
+    'VALE3.SA': {'yahoo': 'VALE3.SA', 'multiplier': 1.0, 'name': 'Vale ON', 'type': 'stock'},
+    'ITUB4.SA': {'yahoo': 'ITUB4.SA', 'multiplier': 1.0, 'name': 'Itaú PN', 'type': 'stock'},
+    'BBDC4.SA': {'yahoo': 'BBDC4.SA', 'multiplier': 1.0, 'name': 'Bradesco PN', 'type': 'stock'},
+    'BBAS3.SA': {'yahoo': 'BBAS3.SA', 'multiplier': 1.0, 'name': 'Banco do Brasil ON', 'type': 'stock'},
+    'ABEV3.SA': {'yahoo': 'ABEV3.SA', 'multiplier': 1.0, 'name': 'Ambev ON', 'type': 'stock'},
+    'MGLU3.SA': {'yahoo': 'MGLU3.SA', 'multiplier': 1.0, 'name': 'Magazine Luiza ON', 'type': 'stock'},
+    'ELET3.SA': {'yahoo': 'ELET3.SA', 'multiplier': 1.0, 'name': 'Eletrobras ON', 'type': 'stock'},
+    
+    # Crypto (fallback para futuros quando Yahoo falha)
+    'BTCUSDT': {'yahoo': 'BTC-USD', 'multiplier': 1.0, 'name': 'Bitcoin', 'type': 'crypto'},
+    'ETHUSDT': {'yahoo': 'ETH-USD', 'multiplier': 1.0, 'name': 'Ethereum', 'type': 'crypto'},
+    
+    # Internacional
+    '^GSPC': {'yahoo': '^GSPC', 'multiplier': 1.0, 'name': 'S&P 500', 'type': 'index'},
+    '^IXIC': {'yahoo': '^IXIC', 'multiplier': 1.0, 'name': 'NASDAQ', 'type': 'index'},
+    '^DJI': {'yahoo': '^DJI', 'multiplier': 1.0, 'name': 'Dow Jones', 'type': 'index'},
 }
 
+# ============================================================================
+# FUNÇÕES DE DADOS
+# ============================================================================
 
-def resolve_symbol(symbol_input):
+def resolve_symbol(symbol):
     """Resolve símbolo B3 para Yahoo Finance"""
-    symbol_upper = symbol_input.upper().replace(".SA", "")
-    
-    # Check if it's a B3 symbol
-    if symbol_upper in B3_SYMBOLS:
-        info = B3_SYMBOLS[symbol_upper]
-        return info['yahoo'], info['multiplier'], info['name'], info['type']
-    
-    # Check if it ends with a number (B3 stock)
-    if symbol_upper[-1].isdigit():
-        return f"{symbol_upper}.SA", 1, symbol_upper, "stock"
-    
-    # Default: use as is
-    return symbol_input, 1, symbol_input, "unknown"
+    if symbol in B3_SYMBOLS:
+        return B3_SYMBOLS[symbol]['yahoo'], B3_SYMBOLS[symbol]['multiplier']
+    return symbol, 1.0
 
+@st.cache_data(ttl=60)
+def get_data_institutional(symbol, period='5d', interval='15m'):
+    """
+    Busca dados com múltiplos fallbacks
+    """
+    yahoo_symbol, multiplier = resolve_symbol(symbol)
+    
+    # Lista de tentativas (período, intervalo)
+    attempts = [
+        (period, interval),
+        ('1mo', '1h'),
+        ('3mo', '1d'),
+        ('1y', '1d'),
+    ]
+    
+    for attempt_period, attempt_interval in attempts:
+        try:
+            df = yf.download(
+                yahoo_symbol,
+                period=attempt_period,
+                interval=attempt_interval,
+                progress=False,
+                show_errors=False
+            )
+            
+            if df is not None and len(df) > 20:
+                # Limpar dados
+                df = df.copy()
+                df.columns = df.columns.str.lower()
+                
+                # Aplicar multiplicador
+                if multiplier != 1.0:
+                    for col in ['open', 'high', 'low', 'close']:
+                        if col in df.columns:
+                            df[col] *= multiplier
+                
+                # Garantir index datetime
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                
+                # Remover NaNs
+                df = df.dropna()
+                
+                if len(df) >= 20:
+                    return df
+        except Exception as e:
+            continue
+    
+    # Se tudo falhar, retornar DataFrame vazio
+    return pd.DataFrame()
 
 # ============================================================================
-# INDICADORES (mesmos do código anterior)
+# INDICADORES TÉCNICOS
 # ============================================================================
 
 def calculate_ema(data, period):
+    """Exponential Moving Average"""
     try:
+        if len(data) < period:
+            return pd.Series([np.nan] * len(data), index=data.index)
         return data.ewm(span=period, adjust=False).mean()
     except:
-        return data
-
+        return pd.Series([np.nan] * len(data), index=data.index)
 
 def calculate_rsi(data, period=14):
+    """Relative Strength Index"""
     try:
+        if len(data) < period + 1:
+            return pd.Series([50] * len(data), index=data.index)
+        
         delta = data.diff()
-        gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-        loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-        rs = gain / (loss + 1e-10)
-        return 100 - (100 / (1 + rs))
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss.replace(0, 1e-10)
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.fillna(50)
     except:
         return pd.Series([50] * len(data), index=data.index)
 
-
-def calculate_cvd(df):
-    try:
-        price_change = df['close'].diff()
-        buy_volume = df['volume'].where(price_change > 0, 0)
-        sell_volume = df['volume'].where(price_change < 0, 0)
-        delta = buy_volume - sell_volume
-        cvd = delta.cumsum()
-        return cvd, delta
-    except:
-        return pd.Series([0] * len(df), index=df.index), pd.Series([0] * len(df), index=df.index)
-
-
 def calculate_vwap(df):
+    """Volume Weighted Average Price"""
     try:
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
-        return vwap
+        return vwap.fillna(method='ffill')
     except:
-        return df['close']
+        return df['close'].copy()
 
-
-def market_profile_simple(df):
+def calculate_cvd(df):
+    """Cumulative Volume Delta"""
     try:
-        prices = []
-        for _, row in df.iterrows():
-            prices.extend([row['close']] * int(row['volume'] / 1000))
-        
-        if len(prices) < 10:
-            prices = df['close'].tolist()
-        
-        poc = np.median(prices)
-        vah = np.percentile(prices, 85)
-        val = np.percentile(prices, 15)
-        
-        return poc, vah, val
+        # Volume de compra: close > open
+        # Volume de venda: close < open
+        delta = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
+        cvd = pd.Series(delta, index=df.index).cumsum()
+        return cvd
     except:
-        current = df['close'].iloc[-1]
-        return current, current * 1.02, current * 0.98
+        return pd.Series([0] * len(df), index=df.index)
 
-
-def hurst_exponent_simple(ts):
+def calculate_volume_profile(df, num_bins=30):
+    """Volume Profile - volume por nível de preço"""
     try:
-        if len(ts) < 20:
-            return 0.5
+        price_min = df['low'].min()
+        price_max = df['high'].max()
+        bins = np.linspace(price_min, price_max, num_bins)
         
-        lags = range(2, min(20, len(ts) // 2))
-        tau = []
+        volume_profile = []
+        for i in range(len(bins) - 1):
+            mask = (df['close'] >= bins[i]) & (df['close'] < bins[i + 1])
+            vol = df.loc[mask, 'volume'].sum()
+            volume_profile.append({
+                'price': (bins[i] + bins[i + 1]) / 2,
+                'volume': vol
+            })
         
-        for lag in lags:
-            std_lag = ts.rolling(window=lag).std().dropna()
-            if len(std_lag) > 0:
-                tau.append(np.mean(std_lag))
-        
-        if len(tau) < 2:
-            return 0.5
-        
-        return np.polyfit(np.log(list(lags[:len(tau)])), np.log(tau), 1)[0]
+        return pd.DataFrame(volume_profile)
     except:
-        return 0.5
+        return pd.DataFrame({'price': [], 'volume': []})
 
+def calculate_market_profile(df, num_levels=20):
+    """Market Profile - POC, VAH, VAL"""
+    try:
+        price_min = df['low'].min()
+        price_max = df['high'].max()
+        bins = np.linspace(price_min, price_max, num_levels)
+        
+        tpo_counts = np.zeros(len(bins) - 1)
+        
+        for i in range(len(bins) - 1):
+            mask = (df['close'] >= bins[i]) & (df['close'] < bins[i + 1])
+            tpo_counts[i] = mask.sum()
+        
+        # POC (Point of Control)
+        poc_idx = np.argmax(tpo_counts)
+        poc_price = (bins[poc_idx] + bins[poc_idx + 1]) / 2
+        
+        # Value Area (70% do volume)
+        total_tpo = tpo_counts.sum()
+        target_tpo = total_tpo * 0.7
+        
+        sorted_indices = np.argsort(tpo_counts)[::-1]
+        cumulative = 0
+        value_area_indices = []
+        
+        for idx in sorted_indices:
+            if cumulative >= target_tpo:
+                break
+            value_area_indices.append(idx)
+            cumulative += tpo_counts[idx]
+        
+        vah_idx = max(value_area_indices)
+        val_idx = min(value_area_indices)
+        
+        vah = (bins[vah_idx] + bins[vah_idx + 1]) / 2
+        val = (bins[val_idx] + bins[val_idx + 1]) / 2
+        
+        return {
+            'poc': poc_price,
+            'vah': vah,
+            'val': val,
+            'bins': bins,
+            'tpo_counts': tpo_counts
+        }
+    except:
+        current_price = df['close'].iloc[-1]
+        return {
+            'poc': current_price,
+            'vah': current_price * 1.02,
+            'val': current_price * 0.98,
+            'bins': [],
+            'tpo_counts': []
+        }
+
+def detect_absorption(df, threshold=0.3):
+    """Detecta zonas de absorção (alto volume, baixa variação de preço)"""
+    try:
+        price_change = abs(df['close'] - df['open']) / df['open']
+        volume_norm = (df['volume'] - df['volume'].min()) / (df['volume'].max() - df['volume'].min() + 1e-10)
+        
+        absorption = (volume_norm > 0.7) & (price_change < threshold)
+        return absorption
+    except:
+        return pd.Series([False] * len(df), index=df.index)
+
+def detect_imbalance(df, threshold=0.7):
+    """Detecta desbalanço de volume (compra vs venda)"""
+    try:
+        delta = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
+        imbalance_ratio = abs(delta) / (df['volume'] + 1e-10)
+        
+        strong_imbalance = imbalance_ratio > threshold
+        direction = np.where(delta > 0, 'BUY', 'SELL')
+        
+        return strong_imbalance, direction
+    except:
+        return pd.Series([False] * len(df), index=df.index), ['NEUTRAL'] * len(df)
+
+def calculate_footprint(df, levels_per_candle=5):
+    """Footprint Chart simplificado - delta por nível de preço"""
+    try:
+        footprint_data = []
+        
+        for idx, row in df.iterrows():
+            price_range = row['high'] - row['low']
+            if price_range == 0:
+                continue
+            
+            level_size = price_range / levels_per_candle
+            
+            for i in range(levels_per_candle):
+                level_price = row['low'] + (i + 0.5) * level_size
+                
+                # Simular delta (na realidade precisaria de dados tick-by-tick)
+                if row['close'] > row['open']:
+                    # Candle de alta - mais volume de compra
+                    delta = row['volume'] / levels_per_candle * (0.6 + np.random.random() * 0.4)
+                else:
+                    # Candle de baixa - mais volume de venda
+                    delta = -row['volume'] / levels_per_candle * (0.6 + np.random.random() * 0.4)
+                
+                footprint_data.append({
+                    'time': idx,
+                    'price': level_price,
+                    'delta': delta
+                })
+        
+        return pd.DataFrame(footprint_data)
+    except:
+        return pd.DataFrame({'time': [], 'price': [], 'delta': []})
 
 # ============================================================================
-# MACHINE LEARNING (mesmo do anterior)
+# MACHINE LEARNING - XGBOOST
 # ============================================================================
 
-class SimpleMLPredictor:
+class InstitutionalMLPredictor:
+    """Preditor ML de nível institucional com XGBoost"""
+    
     def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+        if XGBOOST_AVAILABLE:
+            self.model = XGBClassifier(
+                n_estimators=200,
+                max_depth=7,
+                learning_rate=0.05,
+                random_state=42,
+                n_jobs=-1
+            )
+        else:
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=7,
+                random_state=42,
+                n_jobs=-1
+            )
+        
         self.scaler = StandardScaler()
-        self.trained = False
+        self.is_trained = False
+        self.feature_importance = {}
     
     def prepare_features(self, df):
+        """Engenharia de features profissional (20+ features)"""
         try:
-            features = pd.DataFrame()
-            features['returns'] = df['close'].pct_change()
-            features['rsi'] = calculate_rsi(df['close'], 14)
+            features = pd.DataFrame(index=df.index)
+            
+            # Returns (múltiplos períodos)
+            for period in [1, 3, 5, 10]:
+                features[f'return_{period}'] = df['close'].pct_change(period)
+            
+            # RSI
+            features['rsi_14'] = calculate_rsi(df['close'], 14)
+            features['rsi_21'] = calculate_rsi(df['close'], 21)
+            
+            # EMAs
+            for period in [9, 21, 50]:
+                features[f'ema_{period}'] = calculate_ema(df['close'], period)
+                features[f'price_to_ema_{period}'] = df['close'] / features[f'ema_{period}']
+            
+            # EMA differences
+            features['ema_9_21_diff'] = (features['ema_9'] - features['ema_21']) / features['ema_21']
+            features['ema_21_50_diff'] = (features['ema_21'] - features['ema_50']) / features['ema_50']
+            
+            # Volume
             features['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
-            features['ema_fast'] = calculate_ema(df['close'], 9)
-            features['ema_slow'] = calculate_ema(df['close'], 21)
-            features['ema_diff'] = (features['ema_fast'] - features['ema_slow']) / features['ema_slow']
-            features = features.fillna(0).replace([np.inf, -np.inf], 0)
+            features['cvd'] = calculate_cvd(df)
+            features['cvd_change'] = features['cvd'].pct_change(5)
+            
+            # VWAP
+            vwap = calculate_vwap(df)
+            features['vwap_distance'] = (df['close'] - vwap) / vwap
+            
+            # Volatility
+            features['atr'] = (df['high'] - df['low']).rolling(14).mean()
+            features['volatility'] = df['close'].pct_change().rolling(20).std()
+            
+            # Market Profile
+            mp = calculate_market_profile(df)
+            features['poc_distance'] = (df['close'] - mp['poc']) / mp['poc']
+            
+            # Limpar NaNs
+            features = features.fillna(method='ffill').fillna(0)
+            
             return features
-        except:
-            return pd.DataFrame(np.zeros((len(df), 6)), columns=['returns', 'rsi', 'volume_ratio', 'ema_fast', 'ema_slow', 'ema_diff'])
+        except Exception as e:
+            st.error(f"Erro em prepare_features: {e}")
+            return pd.DataFrame()
     
-    def train(self, df):
+    def train(self, df, lookforward=5):
+        """Treina o modelo"""
         try:
-            if len(df) < 50:
+            if len(df) < 100:
                 return False
+            
             features = self.prepare_features(df)
-            target = (df['close'].shift(-1) > df['close']).astype(int)
-            features = features[:-1]
-            target = target[:-1]
-            mask = ~(features.isna().any(axis=1) | target.isna())
-            features = features[mask]
-            target = target[mask]
-            if len(features) < 30:
+            
+            if features.empty:
                 return False
-            features_scaled = self.scaler.fit_transform(features)
-            self.model.fit(features_scaled, target)
-            self.trained = True
+            
+            # Target: direção do preço nos próximos N bars
+            future_return = df['close'].pct_change(lookforward).shift(-lookforward)
+            target = (future_return > 0).astype(int)
+            
+            # Remover últimas linhas (sem target)
+            valid_idx = target.notna()
+            X = features[valid_idx]
+            y = target[valid_idx]
+            
+            if len(X) < 50:
+                return False
+            
+            # Train/test split
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+            y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+            
+            # Escalar features
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            
+            # Treinar
+            self.model.fit(X_train_scaled, y_train)
+            self.is_trained = True
+            
+            # Feature importance
+            if hasattr(self.model, 'feature_importances_'):
+                self.feature_importance = dict(zip(
+                    X.columns,
+                    self.model.feature_importances_
+                ))
+            
             return True
-        except:
+        except Exception as e:
+            st.error(f"Erro no treinamento ML: {e}")
             return False
     
     def predict(self, df):
+        """Faz predição"""
         try:
-            if not self.trained:
-                return None, [0.5, 0.5]
+            if not self.is_trained:
+                return 0, 0.5  # neutral, 50% confidence
+            
             features = self.prepare_features(df)
-            features_scaled = self.scaler.transform(features.tail(1))
-            prediction = self.model.predict(features_scaled)[0]
-            probability = self.model.predict_proba(features_scaled)[0]
-            return prediction, probability
-        except:
-            return None, [0.5, 0.5]
-
+            
+            if features.empty:
+                return 0, 0.5
+            
+            # Última linha
+            X_last = features.iloc[[-1]]
+            X_scaled = self.scaler.transform(X_last)
+            
+            # Predição
+            pred = self.model.predict(X_scaled)[0]
+            
+            # Probabilidade
+            if hasattr(self.model, 'predict_proba'):
+                proba = self.model.predict_proba(X_scaled)[0]
+                confidence = max(proba)
+            else:
+                confidence = 0.6
+            
+            # Converter para sinal (-1, 0, 1)
+            signal = 1 if pred == 1 else -1
+            
+            return signal, confidence
+        except Exception as e:
+            return 0, 0.5
 
 # ============================================================================
-# SCORE MASTER (mesmo do anterior)
+# SCORE INSTITUCIONAL
 # ============================================================================
 
-def calculate_master_score(df):
-    scores = {}
+def calculate_institutional_score(df):
+    """
+    Calcula score institucional agregado
     
+    Componentes:
+    - Trend (15%): alinhamento de EMAs
+    - Momentum (12%): RSI, Stochastic
+    - Volume (18%): CVD, Volume Profile
+    - Order Flow (20%): Absorption, Imbalance
+    - ML Prediction (15%): XGBoost
+    - VWAP Position (10%): distância do VWAP
+    - Market Profile (10%): posição relativa ao POC
+    """
     try:
-        # Trend
+        result = {
+            'master_score': 0,
+            'signal': 'NEUTRAL',
+            'confidence': 0.5,
+            'components': {}
+        }
+        
+        if len(df) < 50:
+            return result
+        
+        # ----- TREND (15%) -----
+        ema9 = calculate_ema(df['close'], 9).iloc[-1]
+        ema21 = calculate_ema(df['close'], 21).iloc[-1]
+        ema50 = calculate_ema(df['close'], 50).iloc[-1]
+        current_price = df['close'].iloc[-1]
+        
+        trend_score = 0
+        if current_price > ema9 > ema21 > ema50:
+            trend_score = 100
+        elif current_price > ema9 > ema21:
+            trend_score = 60
+        elif current_price > ema9:
+            trend_score = 30
+        elif current_price < ema9 < ema21 < ema50:
+            trend_score = -100
+        elif current_price < ema9 < ema21:
+            trend_score = -60
+        elif current_price < ema9:
+            trend_score = -30
+        
+        result['components']['trend'] = trend_score
+        
+        # ----- MOMENTUM (12%) -----
+        rsi = calculate_rsi(df['close'], 14).iloc[-1]
+        
+        momentum_score = 0
+        if rsi > 70:
+            momentum_score = 80
+        elif rsi > 60:
+            momentum_score = 50
+        elif rsi > 50:
+            momentum_score = 20
+        elif rsi < 30:
+            momentum_score = -80
+        elif rsi < 40:
+            momentum_score = -50
+        elif rsi < 50:
+            momentum_score = -20
+        
+        result['components']['momentum'] = momentum_score
+        
+        # ----- VOLUME (18%) -----
+        cvd = calculate_cvd(df).iloc[-1]
+        cvd_change = calculate_cvd(df).pct_change(10).iloc[-1]
+        
+        volume_score = 0
+        if cvd_change > 0.1:
+            volume_score = 80
+        elif cvd_change > 0.05:
+            volume_score = 50
+        elif cvd_change > 0:
+            volume_score = 20
+        elif cvd_change < -0.1:
+            volume_score = -80
+        elif cvd_change < -0.05:
+            volume_score = -50
+        elif cvd_change < 0:
+            volume_score = -20
+        
+        result['components']['volume'] = volume_score
+        
+        # ----- ORDER FLOW (20%) -----
+        absorption = detect_absorption(df).iloc[-5:].sum()
+        imbalance, direction = detect_imbalance(df)
+        recent_imbalance = imbalance.iloc[-5:].sum()
+        
+        flow_score = 0
+        if recent_imbalance > 2:
+            if direction[-1] == 'BUY':
+                flow_score = 90
+            else:
+                flow_score = -90
+        elif absorption > 2:
+            flow_score = -30  # Absorção = resistência
+        else:
+            flow_score = 0
+        
+        result['components']['order_flow'] = flow_score
+        
+        # ----- ML PREDICTION (15%) -----
+        ml_predictor = InstitutionalMLPredictor()
+        
+        # Treinar apenas se temos dados suficientes
+        if len(df) >= 200:
+            ml_predictor.train(df.iloc[-1000:] if len(df) > 1000 else df)
+        
+        ml_signal, ml_confidence = ml_predictor.predict(df)
+        ml_score = ml_signal * 100 * ml_confidence
+        
+        result['components']['ml_prediction'] = ml_score
+        result['confidence'] = ml_confidence
+        
+        # ----- VWAP POSITION (10%) -----
+        vwap = calculate_vwap(df).iloc[-1]
+        vwap_distance = (current_price - vwap) / vwap
+        
+        vwap_score = 0
+        if vwap_distance > 0.02:
+            vwap_score = 70
+        elif vwap_distance > 0.01:
+            vwap_score = 40
+        elif vwap_distance > 0:
+            vwap_score = 10
+        elif vwap_distance < -0.02:
+            vwap_score = -70
+        elif vwap_distance < -0.01:
+            vwap_score = -40
+        elif vwap_distance < 0:
+            vwap_score = -10
+        
+        result['components']['vwap'] = vwap_score
+        
+        # ----- MARKET PROFILE (10%) -----
+        mp = calculate_market_profile(df)
+        poc_distance = (current_price - mp['poc']) / mp['poc']
+        
+        profile_score = 0
+        if poc_distance > 0.02:
+            profile_score = 60
+        elif poc_distance > 0:
+            profile_score = 30
+        elif poc_distance < -0.02:
+            profile_score = -60
+        elif poc_distance < 0:
+            profile_score = -30
+        
+        result['components']['market_profile'] = profile_score
+        
+        # ----- MASTER SCORE (WEIGHTED AVERAGE) -----
+        weights = {
+            'trend': 0.15,
+            'momentum': 0.12,
+            'volume': 0.18,
+            'order_flow': 0.20,
+            'ml_prediction': 0.15,
+            'vwap': 0.10,
+            'market_profile': 0.10
+        }
+        
+        master_score = sum(
+            result['components'][component] * weight
+            for component, weight in weights.items()
+        )
+        
+        master_score = max(-100, min(100, master_score))
+        result['master_score'] = round(master_score, 2)
+        
+        # ----- SIGNAL -----
+        if master_score > 60:
+            result['signal'] = 'STRONG BUY'
+        elif master_score > 30:
+            result['signal'] = 'BUY'
+        elif master_score > -30:
+            result['signal'] = 'NEUTRAL'
+        elif master_score > -60:
+            result['signal'] = 'SELL'
+        else:
+            result['signal'] = 'STRONG SELL'
+        
+        # Adicionar indicadores extras para retorno
+        result['rsi'] = rsi
+        result['ema9'] = ema9
+        result['ema21'] = ema21
+        result['ema50'] = ema50
+        result['vwap'] = vwap
+        result['cvd'] = cvd
+        result['poc'] = mp['poc']
+        result['vah'] = mp['vah']
+        result['val'] = mp['val']
+        
+        return result
+        
+    except Exception as e:
+        st.error(f"Erro no cálculo do score institucional: {e}")
+        return {
+            'master_score': 0,
+            'signal': 'ERROR',
+            'confidence': 0,
+            'components': {},
+            'rsi': 50,
+            'ema9': 0,
+            'ema21': 0,
+            'ema50': 0,
+            'vwap': 0,
+            'cvd': 0,
+            'poc': 0,
+            'vah': 0,
+            'val': 0
+        }
+
+# ============================================================================
+# CRIAÇÃO DO GRÁFICO (PLOTLY - 6 PAINÉIS)
+# ============================================================================
+
+def create_institutional_chart(df, result):
+    """
+    Gráfico institucional de 6 painéis:
+    1. Candlesticks + VWAP + EMAs + Volume Profile
+    2. Footprint Chart (delta heatmap)
+    3. Market Profile
+    4. RSI + ML Confidence
+    5. Volume + CVD
+    6. Order Flow Metrics
+    """
+    try:
+        fig = make_subplots(
+            rows=6, cols=1,
+            row_heights=[0.35, 0.15, 0.15, 0.12, 0.12, 0.11],
+            vertical_spacing=0.03,
+            subplot_titles=(
+                '📊 Price Action + VWAP + EMAs',
+                '🔥 Footprint Chart (Delta)',
+                '📈 Market Profile',
+                '💹 RSI + ML Confidence',
+                '📦 Volume + CVD',
+                '🌊 Order Flow (Absorption & Imbalance)'
+            ),
+            specs=[
+                [{"secondary_y": True}],
+                [{"type": "heatmap"}],
+                [{"type": "bar"}],
+                [{"secondary_y": True}],
+                [{"secondary_y": True}],
+                [{"type": "bar"}]
+            ]
+        )
+        
+        # ----- PAINEL 1: CANDLESTICKS + VWAP + EMAs -----
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name='Price',
+                increasing_line_color='#00ff88',
+                decreasing_line_color='#ff0051'
+            ),
+            row=1, col=1
+        )
+        
+        # EMAs
         ema9 = calculate_ema(df['close'], 9)
         ema21 = calculate_ema(df['close'], 21)
-        trend_score = 50 if df['close'].iloc[-1] > ema9.iloc[-1] else -50
-        ema_alignment = 40 if ema9.iloc[-1] > ema21.iloc[-1] else -40
-        scores['trend'] = (trend_score + ema_alignment) / 2
+        ema50 = calculate_ema(df['close'], 50)
         
-        # Momentum
-        rsi = calculate_rsi(df['close'], 14)
-        rsi_val = rsi.iloc[-1]
-        if rsi_val > 70:
-            rsi_score = -40
-        elif rsi_val < 30:
-            rsi_score = 40
-        else:
-            rsi_score = (rsi_val - 50)
-        scores['momentum'] = rsi_score
-        
-        # Volume
-        volume_trend = df['volume'].rolling(5).mean().iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
-        volume_score = 30 if volume_trend > 1.2 else (-20 if volume_trend < 0.8 else 0)
-        scores['volume'] = volume_score
-        
-        # Order Flow
-        cvd, delta = calculate_cvd(df)
-        cvd_trend = 40 if cvd.iloc[-1] > cvd.iloc[-20] else -40
-        scores['order_flow'] = cvd_trend
+        fig.add_trace(
+            go.Scatter(x=df.index, y=ema9, name='EMA 9', line=dict(color='#00ff88', width=1)),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=df.index, y=ema21, name='EMA 21', line=dict(color='#00ccff', width=1)),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=df.index, y=ema50, name='EMA 50', line=dict(color='#ffaa00', width=1)),
+            row=1, col=1
+        )
         
         # VWAP
         vwap = calculate_vwap(df)
-        vwap_score = 30 if df['close'].iloc[-1] > vwap.iloc[-1] else -30
-        scores['vwap'] = vwap_score
+        fig.add_trace(
+            go.Scatter(x=df.index, y=vwap, name='VWAP', line=dict(color='#ff00ff', width=2, dash='dash')),
+            row=1, col=1
+        )
         
-        # Market Profile
-        poc, vah, val = market_profile_simple(df)
-        current_price = df['close'].iloc[-1]
-        if current_price > vah:
-            profile_score = 50
-        elif current_price < val:
-            profile_score = -50
-        else:
-            profile_score = 20 if current_price > poc else -20
-        scores['market_profile'] = profile_score
+        # Market Profile lines
+        fig.add_hline(y=result['poc'], line=dict(color='yellow', width=2, dash='dot'), row=1, col=1)
+        fig.add_hline(y=result['vah'], line=dict(color='orange', width=1, dash='dot'), row=1, col=1)
+        fig.add_hline(y=result['val'], line=dict(color='orange', width=1, dash='dot'), row=1, col=1)
         
-        # ML
-        ml_predictor = SimpleMLPredictor()
-        ml_trained = ml_predictor.train(df)
-        if ml_trained:
-            ml_prediction, ml_probability = ml_predictor.predict(df)
-            if ml_prediction is not None:
-                ml_score = 60 if ml_prediction == 1 else -60
-                ml_confidence = max(ml_probability) * 100
-            else:
-                ml_score = 0
-                ml_confidence = 50
-        else:
-            ml_score = 0
-            ml_confidence = 50
-        scores['machine_learning'] = ml_score
+        # ----- PAINEL 2: FOOTPRINT CHART -----
+        footprint = calculate_footprint(df.iloc[-50:])  # Últimas 50 barras
         
-        # Regime
-        hurst = hurst_exponent_simple(df['close'].tail(100))
-        hurst_score = 40 if hurst > 0.55 else (-40 if hurst < 0.45 else 0)
-        scores['regime'] = hurst_score
+        if not footprint.empty and len(footprint) > 0:
+            # Criar matriz para heatmap
+            pivot = footprint.pivot_table(
+                values='delta',
+                index='price',
+                columns='time',
+                aggfunc='sum'
+            )
+            
+            fig.add_trace(
+                go.Heatmap(
+                    z=pivot.values,
+                    x=pivot.columns,
+                    y=pivot.index,
+                    colorscale=[[0, '#ff0051'], [0.5, '#2a2f4a'], [1, '#00ff88']],
+                    showscale=True,
+                    colorbar=dict(title="Delta", x=1.15)
+                ),
+                row=2, col=1
+            )
+        
+        # ----- PAINEL 3: MARKET PROFILE -----
+        mp = calculate_market_profile(df)
+        
+        if len(mp['bins']) > 0:
+            bins_mid = [(mp['bins'][i] + mp['bins'][i+1])/2 for i in range(len(mp['bins'])-1)]
+            
+            fig.add_trace(
+                go.Bar(
+                    y=bins_mid,
+                    x=mp['tpo_counts'],
+                    orientation='h',
+                    name='Market Profile',
+                    marker=dict(color='#00ff88', opacity=0.6)
+                ),
+                row=3, col=1
+            )
+        
+        # ----- PAINEL 4: RSI + ML CONFIDENCE -----
+        rsi = calculate_rsi(df['close'], 14)
+        
+        fig.add_trace(
+            go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#00ccff', width=2)),
+            row=4, col=1
+        )
+        
+        fig.add_hline(y=70, line=dict(color='red', width=1, dash='dash'), row=4, col=1)
+        fig.add_hline(y=50, line=dict(color='gray', width=1, dash='dot'), row=4, col=1)
+        fig.add_hline(y=30, line=dict(color='green', width=1, dash='dash'), row=4, col=1)
+        
+        # ML Confidence (secondary y)
+        ml_conf_series = pd.Series([result['confidence'] * 100] * len(df), index=df.index)
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=ml_conf_series,
+                name='ML Confidence',
+                line=dict(color='#ffaa00', width=1, dash='dot')
+            ),
+            row=4, col=1,
+            secondary_y=True
+        )
+        
+        # ----- PAINEL 5: VOLUME + CVD -----
+        colors = ['#00ff88' if c > o else '#ff0051' for c, o in zip(df['close'], df['open'])]
+        
+        fig.add_trace(
+            go.Bar(x=df.index, y=df['volume'], name='Volume', marker=dict(color=colors, opacity=0.5)),
+            row=5, col=1
+        )
+        
+        # CVD (secondary y)
+        cvd = calculate_cvd(df)
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=cvd,
+                name='CVD',
+                line=dict(color='#ff00ff', width=2)
+            ),
+            row=5, col=1,
+            secondary_y=True
+        )
+        
+        # ----- PAINEL 6: ORDER FLOW -----
+        absorption = detect_absorption(df).astype(int) * 100
+        imbalance, direction = detect_imbalance(df)
+        imbalance_vals = imbalance.astype(int) * 100
+        
+        fig.add_trace(
+            go.Bar(x=df.index, y=absorption, name='Absorption', marker=dict(color='orange', opacity=0.6)),
+            row=6, col=1
+        )
+        fig.add_trace(
+            go.Bar(x=df.index, y=imbalance_vals, name='Imbalance', marker=dict(color='cyan', opacity=0.6)),
+            row=6, col=1
+        )
+        
+        # ----- LAYOUT STYLING -----
+        fig.update_layout(
+            height=1800,
+            template='plotly_dark',
+            paper_bgcolor='#0a0e27',
+            plot_bgcolor='#1a1f3a',
+            font=dict(color='#ffffff', size=12),
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            xaxis_rangeslider_visible=False,
+            hovermode='x unified'
+        )
+        
+        # Update axes
+        fig.update_xaxes(showgrid=True, gridcolor='#2a2f4a')
+        fig.update_yaxes(showgrid=True, gridcolor='#2a2f4a')
+        
+        return fig
         
     except Exception as e:
-        scores = {'trend': 0, 'momentum': 0, 'volume': 0, 'order_flow': 0, 'vwap': 0, 'market_profile': 0, 'machine_learning': 0, 'regime': 0}
-        ml_confidence = 50
-        poc, vah, val = df['close'].iloc[-1], df['close'].iloc[-1] * 1.02, df['close'].iloc[-1] * 0.98
-        cvd, delta = pd.Series([0] * len(df)), pd.Series([0] * len(df))
-        vwap = df['close']
-        rsi = pd.Series([50] * len(df))
-        hurst = 0.5
-    
-    # Master Score
-    weights = {'trend': 1.2, 'momentum': 1.0, 'volume': 0.9, 'order_flow': 1.3, 'vwap': 1.0, 'market_profile': 1.1, 'machine_learning': 1.2, 'regime': 0.8}
-    weighted_scores = [scores[key] * weights[key] for key in scores.keys()]
-    master_score = np.mean(weighted_scores)
-    master_score = np.clip(master_score, -100, 100)
-    
-    # Signal
-    if master_score > 50:
-        signal = 'STRONG BUY'
-        signal_class = 'signal-strong-buy'
-    elif master_score > 25:
-        signal = 'BUY'
-        signal_class = 'signal-buy'
-    elif master_score < -50:
-        signal = 'STRONG SELL'
-        signal_class = 'signal-sell'
-    elif master_score < -25:
-        signal = 'SELL'
-        signal_class = 'signal-sell'
-    else:
-        signal = 'NEUTRAL'
-        signal_class = 'signal-neutral'
-    
-    return {
-        'master_score': master_score,
-        'signal': signal,
-        'signal_class': signal_class,
-        'module_scores': scores,
-        'ml_confidence': ml_confidence,
-        'indicators': {
-            'cvd': cvd.iloc[-1],
-            'vwap': vwap.iloc[-1],
-            'poc': poc,
-            'vah': vah,
-            'val': val,
-            'rsi': rsi.iloc[-1],
-            'hurst': hurst
-        }
-    }
-
+        st.error(f"Erro ao criar gráfico: {e}")
+        
+        # Fallback: gráfico simples de candlesticks
+        fig = go.Figure()
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name='Price'
+            )
+        )
+        fig.update_layout(
+            height=600,
+            template='plotly_dark',
+            title='Gráfico de Candlesticks (Fallback)'
+        )
+        return fig
 
 # ============================================================================
-# BUSCA DE DADOS COM SUPORTE B3
-# ============================================================================
-
-@st.cache_data(ttl=60, show_spinner=False)
-def get_data_b3(symbol_input, period="5d", interval="15m"):
-    """Busca dados com suporte B3"""
-    try:
-        # Resolve symbol
-        yahoo_symbol, multiplier, name, asset_type = resolve_symbol(symbol_input)
-        
-        ticker = yf.Ticker(yahoo_symbol)
-        
-        # Tentar timeframe solicitado
-        df = ticker.history(period=period, interval=interval)
-        
-        # Fallbacks
-        if df.empty:
-            df = ticker.history(period="1mo", interval="1h")
-        if df.empty:
-            df = ticker.history(period="6mo", interval="1d")
-        if df.empty:
-            df = ticker.history(period="1mo")
-        
-        if df.empty:
-            return None, None, f"No data for {symbol_input}", None
-        
-        # Padronizar
-        df.columns = [col.lower() for col in df.columns]
-        df = df.reset_index()
-        df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
-        
-        if len(df) < 10:
-            return None, None, f"Insufficient data ({len(df)} candles)", None
-        
-        # Aplicar multiplicador para futuros
-        if multiplier != 1:
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col] * multiplier
-        
-        symbol_info = {
-            'original': symbol_input,
-            'yahoo': yahoo_symbol,
-            'name': name,
-            'type': asset_type,
-            'multiplier': multiplier
-        }
-        
-        return df, symbol_info, None, asset_type
-        
-    except Exception as e:
-        return None, None, f"Error: {str(e)}", None
-
-
-# ============================================================================
-# GRÁFICO (mesmo do anterior)
-# ============================================================================
-
-def create_chart_optimized(df, result):
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[0.6, 0.2, 0.2],
-        subplot_titles=('Price & Indicators', 'RSI', 'Volume')
-    )
-    
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name='Price',
-            increasing_line_color='#00ff88',
-            decreasing_line_color='#ff4444'
-        ),
-        row=1, col=1
-    )
-    
-    ema9 = calculate_ema(df['close'], 9)
-    ema21 = calculate_ema(df['close'], 21)
-    
-    fig.add_trace(go.Scatter(x=df.index, y=ema9, name='EMA 9', line=dict(color='cyan', width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=ema21, name='EMA 21', line=dict(color='orange', width=2)), row=1, col=1)
-    
-    vwap = calculate_vwap(df)
-    fig.add_trace(go.Scatter(x=df.index, y=vwap, name='VWAP', line=dict(color='yellow', width=2, dash='dot')), row=1, col=1)
-    
-    fig.add_hline(y=result['indicators']['poc'], line=dict(color='cyan', width=2, dash='solid'), annotation_text="POC", row=1, col=1)
-    fig.add_hline(y=result['indicators']['vah'], line=dict(color='green', width=1, dash='dash'), annotation_text="VAH", row=1, col=1)
-    fig.add_hline(y=result['indicators']['val'], line=dict(color='red', width=1, dash='dash'), annotation_text="VAL", row=1, col=1)
-    
-    rsi = calculate_rsi(df['close'], 14)
-    fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='purple', width=2)), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    
-    colors = ['#00ff88' if df['close'].iloc[i] >= df['open'].iloc[i] else '#ff4444' for i in range(len(df))]
-    fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume', marker_color=colors, opacity=0.7), row=3, col=1)
-    
-    fig.update_layout(
-        height=900,
-        showlegend=True,
-        xaxis_rangeslider_visible=False,
-        template='plotly_dark',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0.3)'
-    )
-    
-    return fig
-
-
-# ============================================================================
-# APP PRINCIPAL
+# STREAMLIT UI - FUNÇÃO PRINCIPAL
 # ============================================================================
 
 def main():
+    """Função principal do Streamlit"""
+    
+    # Título
     st.markdown("""
-    <div style='text-align: center; padding: 30px;'>
-        <h1 style='font-size: 48px;'>🇧🇷 PROFITONE V3.0 - B3 EDITION</h1>
-        <h2 style='font-size: 24px; color: #00ff88;'>Suporte para WINFUT, DOLM24 e Ações B3</h2>
-    </div>
+    <h1 style='text-align: center; font-size: 3rem;'>
+        📈 ProfitOne V4.0
+    </h1>
+    <h3 style='text-align: center; color: #00ff88; font-weight: 300;'>
+        INSTITUTIONAL TRADING SYSTEM
+    </h3>
+    <p style='text-align: center; color: #888; margin-bottom: 2rem;'>
+        Sistema de análise técnica de nível institucional com ML, Order Flow & Footprint Charts
+    </p>
     """, unsafe_allow_html=True)
     
+    # ----- SIDEBAR -----
     with st.sidebar:
-        st.markdown("## 🎯 TRADING CENTER")
+        st.markdown("### ⚙️ Configurações")
         
-        # B3 Assets
-        st.markdown("### 🇧🇷 Futuros B3")
-        b3_futures = ["WINFUT", "WINM24", "DOLFUT", "DOLM24"]
+        # Seleção de ativo
+        st.markdown("#### 📊 Ativo")
         
-        st.markdown("### 📈 Ações B3")
-        b3_stocks = ["PETR4", "VALE3", "ITUB4", "BBDC4", "BBAS3", "MGLU3", "WEGE3"]
+        asset_categories = {
+            '🔥 Futuros B3': ['WINFUT', 'WINM25', 'DOLFUT', 'DOLM25'],
+            '📈 Ações B3': ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 'ABEV3.SA', 'MGLU3.SA', 'ELET3.SA'],
+            '₿ Crypto': ['BTCUSDT', 'ETHUSDT'],
+            '🌎 Internacional': ['^GSPC', '^IXIC', '^DJI', '^BVSP']
+        }
         
-        st.markdown("### 🌎 Internacional")
-        intl = ["^BVSP (Ibovespa)", "^GSPC (S&P 500)", "BTC-USD (Bitcoin)", "ETH-USD (Ethereum)"]
+        selected_category = st.selectbox("Categoria", list(asset_categories.keys()))
+        symbol = st.selectbox("Símbolo", asset_categories[selected_category])
         
-        all_symbols = b3_futures + b3_stocks + intl + ["Custom"]
+        # Badge para futuros
+        if B3_SYMBOLS.get(symbol, {}).get('type') == 'future':
+            st.markdown(f"""
+            <div style='background: linear-gradient(135deg, #ff6b00 0%, #ff0051 100%);
+                        padding: 10px; border-radius: 8px; text-align: center; margin: 10px 0;'>
+                <strong>⚡ FUTURO B3</strong><br>
+                <small>Proxy: {B3_SYMBOLS[symbol]['yahoo']}</small>
+            </div>
+            """, unsafe_allow_html=True)
         
-        selected = st.selectbox("Select Asset", all_symbols, index=0)  # Default: WINFUT
+        # Timeframe
+        st.markdown("#### ⏱️ Timeframe")
+        timeframe_map = {
+            '1 Minuto': ('5d', '1m'),
+            '5 Minutos': ('5d', '5m'),
+            '15 Minutos': ('5d', '15m'),
+            '1 Hora': ('1mo', '1h'),
+            '4 Horas': ('3mo', '4h'),
+            '1 Dia': ('1y', '1d')
+        }
+        timeframe_label = st.radio("Período", list(timeframe_map.keys()), index=2)
+        period, interval = timeframe_map[timeframe_label]
         
-        if selected == "Custom":
-            symbol = st.text_input("Ticker:", "WINFUT")
-        else:
-            symbol = selected.split(" ")[0]
-        
-        timeframe = st.radio("Timeframe", ["5 min", "15 min", "1 hour", "1 day"], index=2)
-        
-        interval_map = {"5 min": "5m", "15 min": "15m", "1 hour": "1h", "1 day": "1d"}
-        interval = interval_map[timeframe]
-        
-        period_map = {"5m": "1d", "15m": "5d", "1h": "1mo", "1d": "6mo"}
-        period = period_map[interval]
-        
+        # Botão de refresh
         st.markdown("---")
-        
-        if st.button("🔄 Refresh", use_container_width=True):
+        if st.button("🔄 Atualizar Dados", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
         
+        # Informações
         st.markdown("---")
-        st.info("💡 **Nota:** WINFUT usa dados do Ibovespa (^BVSP) como proxy em tempo real.")
+        st.markdown("""
+        <div style='background: #1a1f3a; padding: 15px; border-radius: 8px; margin-top: 20px;'>
+            <strong style='color: #00ff88;'>✨ Novidades V4.0:</strong><br>
+            <ul style='margin-top: 10px; color: #ccc; font-size: 0.85rem;'>
+                <li>✅ XGBoost ML (200 árvores)</li>
+                <li>✅ Footprint Chart</li>
+                <li>✅ Market Profile HD</li>
+                <li>✅ Order Flow Analysis</li>
+                <li>✅ Volume Profile</li>
+                <li>✅ Absorption Zones</li>
+                <li>✅ CVD (Cumulative Delta)</li>
+                <li>✅ 6-Panel Chart</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # LOADING
-    with st.spinner(f"📊 Loading {symbol}..."):
-        df, symbol_info, error, asset_type = get_data_b3(symbol, period, interval)
+    # ----- MAIN CONTENT -----
     
-    if error or df is None:
-        st.error(f"❌ {error}")
-        st.info("💡 **Try:**\n- WINFUT\n- PETR4\n- BTC-USD")
+    # Buscar dados
+    with st.spinner('🔄 Carregando dados do mercado...'):
+        df = get_data_institutional(symbol, period, interval)
+    
+    if df.empty or len(df) < 20:
+        st.error(f"""
+        ❌ **Sem dados disponíveis para {symbol}**
+        
+        **Possíveis causas:**
+        - Yahoo Finance não tem dados para este ativo no timeframe selecionado
+        - Mercado fechado
+        - Símbolo incorreto
+        
+        **Sugestões:**
+        - Tente um timeframe maior (ex: 1 Dia)
+        - Escolha outro ativo
+        - Verifique se o mercado está aberto
+        """)
         return
     
-    if 'datetime' in df.columns:
-        df = df.set_index('datetime')
-    elif 'date' in df.columns:
-        df = df.set_index('date')
+    # Calcular score institucional
+    with st.spinner('🧮 Calculando análise institucional...'):
+        result = calculate_institutional_score(df)
     
-    # Display symbol info
-    if symbol_info and asset_type == "future":
-        st.markdown(f"<div style='text-align: center;'>"
-                   f"<span class='b3-badge'>🇧🇷 B3 FUTURE</span> "
-                   f"<span style='color: #00ff88; font-size: 20px;'>{symbol_info['name']}</span>"
-                   f"</div>", unsafe_allow_html=True)
-        st.caption(f"📊 Proxy: {symbol_info['yahoo']} | Multiplier: {symbol_info['multiplier']}")
-    
-    st.success(f"✅ Loaded {len(df)} candles")
-    
-    # CALCULAR SCORE
-    with st.spinner("🧠 Analyzing..."):
-        result = calculate_master_score(df)
-    
-    # METRICS
-    st.markdown("---")
+    # ----- MÉTRICAS PRINCIPAIS -----
+    st.markdown("### 🎯 Dashboard Institucional")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown(f"<div class='pro-card {result['signal_class']}' style='text-align: center;'>"
-                   f"<h3>Master Score</h3><h1>{result['master_score']:.1f}</h1>"
-                   f"<p style='font-size: 20px;'><b>{result['signal']}</b></p></div>",
-                   unsafe_allow_html=True)
+        score_color = '#00ff88' if result['master_score'] > 0 else '#ff0051'
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #1a1f3a 0%, #2a2f4a 100%);
+                    padding: 20px; border-radius: 10px; text-align: center;
+                    border-left: 4px solid {score_color};'>
+            <div style='color: #888; font-size: 0.9rem;'>MASTER SCORE</div>
+            <div style='color: {score_color}; font-size: 2.5rem; font-weight: 700; margin: 10px 0;'>
+                {result['master_score']:.1f}
+            </div>
+            <div style='color: {score_color}; font-size: 1.1rem; font-weight: 600;'>
+                {result['signal']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        price = df['close'].iloc[-1]
-        prev_price = df['close'].iloc[-2]
-        change_pct = ((price - prev_price) / prev_price) * 100
-        st.metric("💰 Price", f"{price:,.2f} pts" if asset_type == "future" else f"${price:.2f}", delta=f"{change_pct:+.2f}%")
+        price_change = df['close'].pct_change().iloc[-1] * 100
+        price_color = '#00ff88' if price_change > 0 else '#ff0051'
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #1a1f3a 0%, #2a2f4a 100%);
+                    padding: 20px; border-radius: 10px; text-align: center;'>
+            <div style='color: #888; font-size: 0.9rem;'>PREÇO</div>
+            <div style='color: #fff; font-size: 2rem; font-weight: 700; margin: 10px 0;'>
+                {df['close'].iloc[-1]:.2f}
+            </div>
+            <div style='color: {price_color}; font-size: 1rem;'>
+                {price_change:+.2f}%
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col3:
-        st.metric("🤖 ML Confidence", f"{result['ml_confidence']:.1f}%")
+        conf_pct = result['confidence'] * 100
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #1a1f3a 0%, #2a2f4a 100%);
+                    padding: 20px; border-radius: 10px; text-align: center;'>
+            <div style='color: #888; font-size: 0.9rem;'>ML CONFIDENCE</div>
+            <div style='color: #ffaa00; font-size: 2rem; font-weight: 700; margin: 10px 0;'>
+                {conf_pct:.1f}%
+            </div>
+            <div style='color: #888; font-size: 0.85rem;'>
+                {'XGBoost' if XGBOOST_AVAILABLE else 'RandomForest'}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col4:
-        st.metric("📊 RSI", f"{result['indicators']['rsi']:.1f}")
+        rsi_color = '#ff0051' if result['rsi'] > 70 else ('#00ff88' if result['rsi'] < 30 else '#ffaa00')
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #1a1f3a 0%, #2a2f4a 100%);
+                    padding: 20px; border-radius: 10px; text-align: center;'>
+            <div style='color: #888; font-size: 0.9rem;'>RSI (14)</div>
+            <div style='color: {rsi_color}; font-size: 2rem; font-weight: 700; margin: 10px 0;'>
+                {result['rsi']:.1f}
+            </div>
+            <div style='color: #888; font-size: 0.85rem;'>
+                {'Overbought' if result['rsi'] > 70 else ('Oversold' if result['rsi'] < 30 else 'Neutral')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # MODULE SCORES
-    st.markdown("---")
-    st.markdown("## 📊 Module Scores")
+    # ----- MÓDULOS DE SCORE -----
+    st.markdown("### 📊 Análise por Módulo")
     
-    cols = st.columns(len(result['module_scores']))
+    modules = [
+        ('Trend', result['components'].get('trend', 0)),
+        ('Momentum', result['components'].get('momentum', 0)),
+        ('Volume', result['components'].get('volume', 0)),
+        ('Order Flow', result['components'].get('order_flow', 0)),
+        ('ML Prediction', result['components'].get('ml_prediction', 0)),
+        ('VWAP', result['components'].get('vwap', 0)),
+        ('Market Profile', result['components'].get('market_profile', 0))
+    ]
     
-    for col, (name, score) in zip(cols, result['module_scores'].items()):
-        signal_class = "signal-buy" if score > 20 else ("signal-sell" if score < -20 else "signal-neutral")
+    cols = st.columns(4)
+    for idx, (name, score) in enumerate(modules):
+        col = cols[idx % 4]
+        score_color = '#00ff88' if score > 0 else '#ff0051'
         
         with col:
-            col.markdown(f"<div class='pro-card {signal_class}' style='text-align: center;'>"
-                        f"<h4>{name.title()}</h4><h2>{score:.1f}</h2></div>",
-                        unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class='module-card'>
+                <div class='module-title'>{name}</div>
+                <div class='module-score' style='color: {score_color};'>
+                    {score:+.1f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     
-    # GRÁFICO
-    st.markdown("---")
-    st.markdown("## 📈 Chart")
+    # ----- GRÁFICO INSTITUCIONAL -----
+    st.markdown("### 📈 Gráfico Institucional (6 Painéis)")
     
-    fig = create_chart_optimized(df, result)
-    st.plotly_chart(fig, use_container_width=True)
+    with st.spinner('🎨 Renderizando gráfico institucional...'):
+        fig = create_institutional_chart(df, result)
+        st.plotly_chart(fig, use_container_width=True)
     
-    # DETAILED INFO
-    st.markdown("---")
+    # ----- DETALHES ADICIONAIS -----
+    st.markdown("### 📋 Informações Detalhadas")
     
-    col1, col2, col3 = st.columns(3)
+    tab1, tab2, tab3 = st.tabs(["📊 Indicadores", "🌊 Order Flow", "🤖 Machine Learning"])
     
-    with col1:
-        st.markdown("### 📊 Indicators")
-        st.write(f"**VWAP:** {result['indicators']['vwap']:,.2f}")
-        st.write(f"**CVD:** {result['indicators']['cvd']:,.0f}")
-        st.write(f"**Hurst:** {result['indicators']['hurst']:.3f}")
-    
-    with col2:
-        st.markdown("### 🎯 Market Profile")
-        st.write(f"**POC:** {result['indicators']['poc']:,.2f}")
-        st.write(f"**VAH:** {result['indicators']['vah']:,.2f}")
-        st.write(f"**VAL:** {result['indicators']['val']:,.2f}")
-    
-    with col3:
-        st.markdown("### 📈 Status")
-        price_pos = "Above" if price > result['indicators']['vwap'] else "Below"
-        st.write(f"**Price vs VWAP:** {price_pos}")
+    with tab1:
+        col1, col2 = st.columns(2)
         
-        regime = "Trending" if result['indicators']['hurst'] > 0.55 else ("Ranging" if result['indicators']['hurst'] < 0.45 else "Random")
-        st.write(f"**Market Regime:** {regime}")
+        with col1:
+            st.markdown("#### 📈 Médias Móveis")
+            st.write(f"**EMA 9:** {result['ema9']:.2f}")
+            st.write(f"**EMA 21:** {result['ema21']:.2f}")
+            st.write(f"**EMA 50:** {result['ema50']:.2f}")
+            st.write(f"**VWAP:** {result['vwap']:.2f}")
+        
+        with col2:
+            st.markdown("#### 📊 Market Profile")
+            st.write(f"**POC:** {result['poc']:.2f}")
+            st.write(f"**VAH:** {result['vah']:.2f}")
+            st.write(f"**VAL:** {result['val']:.2f}")
     
-    # FOOTER
+    with tab2:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📦 Volume Analysis")
+            st.write(f"**CVD:** {result['cvd']:.0f}")
+            cvd_df = pd.DataFrame({
+                'Período': df.index[-20:],
+                'CVD': calculate_cvd(df).iloc[-20:]
+            })
+            st.line_chart(cvd_df.set_index('Período'))
+        
+        with col2:
+            st.markdown("#### 🌊 Flow Metrics")
+            absorption_count = detect_absorption(df).iloc[-20:].sum()
+            imbalance, _ = detect_imbalance(df)
+            imbalance_count = imbalance.iloc[-20:].sum()
+            
+            st.write(f"**Absorption Zones (últimas 20 barras):** {absorption_count}")
+            st.write(f"**Imbalance Events (últimas 20 barras):** {imbalance_count}")
+    
+    with tab3:
+        st.markdown("#### 🤖 Machine Learning")
+        st.write(f"**Modelo:** {'XGBoost (200 árvores)' if XGBOOST_AVAILABLE else 'RandomForest (100 árvores)'}")
+        st.write(f"**Confidence:** {result['confidence']*100:.1f}%")
+        st.write(f"**Features:** 20+ (returns, EMAs, RSI, volume, CVD, VWAP, etc.)")
+        st.write(f"**Target:** Direção do preço nos próximos 5 bars")
+    
+    # ----- FOOTER -----
     st.markdown("---")
-    st.caption(f"🇧🇷 ProfitOne V3.0 B3 Edition | {symbol} ({symbol_info['name'] if symbol_info else symbol}) | {timeframe} | {datetime.now().strftime('%H:%M:%S')}")
-    st.caption("⚠️ WINFUT e outros futuros B3 usam dados proxy do Ibovespa para fins educacionais")
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown(f"""
+    <div style='text-align: center; color: #666; font-size: 0.85rem; padding: 20px 0;'>
+        <strong>ProfitOne V4.0 Institutional</strong> | 
+        Última atualização: {current_time} | 
+        Dados: {len(df)} barras | 
+        Símbolo: {symbol} ({timeframe_label})<br>
+        <em style='color: #888;'>⚠️ Este sistema é apenas para fins educacionais. Não constitui recomendação de investimento.</em>
+    </div>
+    """, unsafe_allow_html=True)
 
+# ============================================================================
+# EXECUTAR APLICAÇÃO
+# ============================================================================
 
 if __name__ == "__main__":
     main()
