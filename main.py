@@ -8,19 +8,22 @@ from scipy.stats import entropy
 from datetime import datetime
 import time
 
-st.set_page_config(page_title="ProfitOne IBOVESPA", layout="wide", page_icon="📊")
+st.set_page_config(page_title="ProfitOne Ultimate V2", layout="wide", page_icon="🚀")
 
-# CSS
+# CSS com fontes brancas
 st.markdown("""
 <style>
     .main {background-color: #000000;}
-    h1, h2, h3 {color: #00d9ff;}
+    * {color: #ffffff !important;}
+    h1, h2, h3, h4, h5, h6 {color: #00d9ff !important; text-shadow: 0 0 20px #00d9ff;}
     .stMetric {
         background: linear-gradient(135deg, #1a1d29 0%, #2d3142 100%);
         padding: 20px;
         border-radius: 10px;
         border-left: 4px solid #00d9ff;
     }
+    .stMetric label {color: #ffffff !important;}
+    .stMetric [data-testid="stMetricValue"] {color: #00d9ff !important;}
     .signal-board {
         padding: 40px;
         border-radius: 20px;
@@ -28,104 +31,194 @@ st.markdown("""
         font-size: 60px;
         font-weight: bold;
         margin: 20px 0;
+        animation: pulse 2s infinite;
     }
     .signal-up {
         background: linear-gradient(135deg, #00ff88 0%, #00cc66 100%);
-        color: #000;
+        color: #000 !important;
     }
     .signal-down {
         background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%);
-        color: #fff;
+        color: #fff !important;
     }
+    .asset-card {
+        background: linear-gradient(135deg, #1a1d29 0%, #2d3142 100%);
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 4px solid #00d9ff;
+        margin: 10px 0;
+    }
+    @keyframes pulse {
+        0%, 100% {transform: scale(1);}
+        50% {transform: scale(1.02);}
+    }
+    .stTabs [data-baseweb="tab-list"] {background-color: #1a1d29;}
+    .stTabs [data-baseweb="tab"] {color: #ffffff !important;}
+    .stDataFrame {color: #ffffff !important;}
+    table {color: #ffffff !important;}
+    .css-1d391kg {color: #ffffff !important;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# INDICADORES
+# INDICADORES AVANÇADOS
 # ==========================================
 
-def tema(close, period=20):
-    ema1 = close.ewm(span=period, adjust=False).mean()
-    ema2 = ema1.ewm(span=period, adjust=False).mean()
-    ema3 = ema2.ewm(span=period, adjust=False).mean()
-    tema = 3 * ema1 - 3 * ema2 + ema3
-    velocity = tema.diff()
-    return tema, velocity
-
-def kalman_filter(data):
-    Q, R = 1e-5, 1e-2
-    n = len(data)
-    x_hat = np.zeros(n)
-    P = np.zeros(n)
-    x_hat[0] = data.iloc[0]
-    P[0] = 1.0
+def quantum_hunter_v13(df, modo=2, sensibilidade=1.5):
+    """
+    Quantum Hunter V13 - Institutional Trend
+    Retorna Score (-100 a +100) e sinal de cor
+    """
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
     
-    for k in range(1, n):
-        x_hat_minus = x_hat[k-1]
-        P_minus = P[k-1] + Q
-        K = P_minus / (P_minus + R)
-        x_hat[k] = x_hat_minus + K * (data.iloc[k] - x_hat_minus)
-        P[k] = (1 - K) * P_minus
+    # Calibragem por modo
+    if modo == 1:  # 5min Scalp
+        periodo_lento, periodo_rapido, periodo_rsi = 21, 8, 9
+    elif modo == 2:  # 15min Day Trade
+        periodo_lento, periodo_rapido, periodo_rsi = 34, 13, 14
+    else:  # 60min+ Swing
+        periodo_lento, periodo_rapido, periodo_rsi = 72, 21, 21
     
-    return pd.Series(x_hat, index=data.index)
+    # Médias
+    media_lenta = close.ewm(span=periodo_lento, adjust=False).mean()
+    media_rapida = close.ewm(span=periodo_rapido, adjust=False).mean()
+    
+    # RSI
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periodo_rsi).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periodo_rsi).mean()
+    rs = gain / (loss + 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+    
+    # VWAP Intraday
+    typical_price = (high + low + close) / 3
+    vwap = (typical_price * volume).cumsum() / volume.cumsum()
+    
+    # Cálculo do Score
+    trend_score = pd.Series(0, index=close.index, dtype=float)
+    
+    # A) Força da Tendência (40%)
+    trend_score += (close > media_rapida).astype(float) * 20
+    trend_score += (media_rapida > media_lenta).astype(float) * 20
+    trend_score -= (close < media_rapida).astype(float) * 20
+    trend_score -= (media_rapida < media_lenta).astype(float) * 20
+    
+    # B) Contexto VWAP (30%)
+    trend_score += (close > vwap).astype(float) * 30
+    trend_score -= (close <= vwap).astype(float) * 30
+    
+    # C) Momentum RSI (30%)
+    trend_score += ((rsi > 55).astype(float) * 15)
+    trend_score += ((rsi > 50) & (rsi <= 55)).astype(float) * 5
+    trend_score -= ((rsi < 45).astype(float) * 15)
+    trend_score -= ((rsi < 50) & (rsi >= 45)).astype(float) * 5
+    
+    # Suavização (Cobra Sólida)
+    score_suavizado = trend_score.ewm(span=3, adjust=False).mean()
+    score_suavizado = score_suavizado.clip(-100, 100)
+    
+    return score_suavizado, media_lenta, media_rapida, vwap
 
-def shannon_entropy(data, window=20):
-    def calc_ent(x):
-        if len(x) < 2: return 0
-        ret = np.diff(x)
-        hist, _ = np.histogram(ret, bins=10, density=True)
-        hist = hist[hist > 0]
-        return entropy(hist, base=2)
-    return data.rolling(window=window).apply(calc_ent, raw=False)
-
-def fisher_transform(high, low, period=10):
+def turbo_stoch_win(df):
+    """
+    TurboStoch WIN - Schaff + Fisher + Hurst
+    Retorna STC, Fisher, Hurst e cor
+    """
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    
+    # Schaff Trend Cycle
+    periodo_curto, periodo_longo, periodo_ciclo = 24, 52, 20
+    
+    macd_line = close.ewm(span=periodo_curto, adjust=False).mean() - close.ewm(span=periodo_longo, adjust=False).mean()
+    
+    min_macd = macd_line.rolling(periodo_ciclo).min()
+    max_macd = macd_line.rolling(periodo_ciclo).max()
+    
+    st1 = ((macd_line - min_macd) / (max_macd - min_macd + 1e-10)) * 100
+    st1 = st1.ewm(span=3, adjust=False).mean()
+    
+    min_st1 = st1.rolling(periodo_ciclo).min()
+    max_st1 = st1.rolling(periodo_ciclo).max()
+    
+    stc = ((st1 - min_st1) / (max_st1 - min_st1 + 1e-10)) * 100
+    stc = stc.ewm(span=3, adjust=False).mean()
+    
+    # Fisher Transform
+    periodo_fisher = 10
     hl2 = (high + low) / 2
-    max_h = hl2.rolling(period).max()
-    min_l = hl2.rolling(period).min()
-    value = 2 * ((hl2 - min_l) / (max_h - min_l + 1e-10) - 0.5)
-    value = value.clip(-0.999, 0.999)
-    fisher = 0.5 * np.log((1 + value) / (1 - value + 1e-10))
-    return fisher
-
-def hurst_exponent(data, window=100):
-    def calc_h(ts):
-        if len(ts) < 10: return 0.5
-        lags = range(2, min(20, len(ts)//2))
-        tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
-        poly = np.polyfit(np.log(lags), np.log(tau), 1)
-        return poly[0]
-    return data.rolling(window=window).apply(calc_h, raw=False)
-
-def z_score(data, window=20):
-    mean = data.rolling(window).mean()
-    std = data.rolling(window).std()
-    return (data - mean) / (std + 1e-10)
-
-# ==========================================
-# BUSCAR DADOS - MÚLTIPLAS FONTES
-# ==========================================
-
-def get_ibovespa_data(period="1d", interval="5m"):
-    """Tentar múltiplas fontes para IBOVESPA"""
+    max_h = hl2.rolling(periodo_fisher).max()
+    min_l = hl2.rolling(periodo_fisher).min()
     
-    # FONTE 1: Yahoo Finance (preferencial)
+    val = 2 * ((hl2 - min_l) / (max_h - min_l + 1e-10) - 0.5)
+    val = val.clip(-0.999, 0.999)
+    
+    fisher = 0.5 * np.log((1 + val) / (1 - val + 1e-10))
+    fisher_norm = ((fisher + 4) / 8) * 100
+    fisher_norm = fisher_norm.clip(0, 100)
+    
+    # Hurst Exponent (simplificado)
+    periodo_hurst = 30
+    range_price = high.rolling(periodo_hurst).max() - low.rolling(periodo_hurst).min()
+    mean_range = close.diff().abs().rolling(periodo_hurst).mean()
+    
+    hurst = np.log(range_price / (mean_range + 1e-10)) / np.log(periodo_hurst)
+    hurst = hurst.fillna(0.5)
+    
+    return stc, fisher_norm, hurst
+
+def calcular_forca_win(df):
+    """
+    Força do WIN baseada em múltiplos indicadores
+    Retorna valor de 0-100
+    """
+    score, _, _, _ = quantum_hunter_v13(df)
+    stc, fisher, hurst = turbo_stoch_win(df)
+    
+    # Combinar indicadores
+    forca = (abs(score.iloc[-1]) * 0.4 + stc.iloc[-1] * 0.3 + fisher.iloc[-1] * 0.3)
+    
+    # Ajustar por Hurst (reduz força se lateral)
+    if not pd.isna(hurst.iloc[-1]):
+        if hurst.iloc[-1] < 0.45:
+            forca *= 0.5  # Mercado lateral, reduz confiança
+    
+    return min(forca, 100)
+
+# ==========================================
+# BUSCAR DADOS
+# ==========================================
+
+@st.cache_data(ttl=10)
+def get_market_data(symbol, interval="5m"):
+    """Buscar dados de múltiplas fontes"""
+    
+    # Mapeamento de símbolos
+    symbol_map = {
+        "IBOV": "%5EBVSP",
+        "DOLAR": "USDBRL%3DX",
+        "SP500": "%5EGSPC",
+        "NASDAQ": "%5EIXIC",
+        "DOW": "%5EDJI"
+    }
+    
+    yahoo_symbol = symbol_map.get(symbol, symbol)
+    
     try:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        params = {
-            "interval": interval,
-            "range": period,
-            "includePrePost": "false"
-        }
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        params = {"interval": interval, "range": "1d"}
         
         response = requests.get(url, headers=headers, params=params, timeout=15)
         
         if response.status_code == 200:
             data = response.json()
             
-            if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
+            if 'chart' in data and data['chart']['result']:
                 result = data['chart']['result'][0]
                 timestamps = result['timestamp']
                 quotes = result['indicators']['quote'][0]
@@ -142,300 +235,350 @@ def get_ibovespa_data(period="1d", interval="5m"):
                 df.set_index('timestamp', inplace=True)
                 df = df.dropna()
                 
-                if len(df) > 0:
-                    return df
+                return df if len(df) > 0 else None
     
     except Exception as e:
-        st.warning(f"Tentativa Yahoo falhou: {str(e)}")
+        st.warning(f"Erro {symbol}: {str(e)}")
     
-    # FONTE 2: Alpha Vantage (backup)
-    try:
-        # API pública gratuita
-        url = "https://www.alphavantage.co/query"
-        params = {
-            "function": "TIME_SERIES_INTRADAY",
-            "symbol": "BVSP",
-            "interval": interval.replace("m", "min"),
-            "apikey": "demo",
-            "outputsize": "compact"
-        }
-        
-        response = requests.get(url, params=params, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            if f"Time Series ({interval})" in data:
-                time_series = data[f"Time Series ({interval})"]
-                
-                df = pd.DataFrame.from_dict(time_series, orient='index')
-                df.index = pd.to_datetime(df.index)
-                df.columns = ['open', 'high', 'low', 'close', 'volume']
-                
-                for col in df.columns:
-                    df[col] = df[col].astype(float)
-                
-                return df.sort_index()
-    
-    except Exception as e:
-        st.warning(f"Tentativa Alpha Vantage falhou: {str(e)}")
-    
-    # FONTE 3: Dados simulados (último recurso)
-    st.warning("⚠️ Usando dados SIMULADOS do IBOVESPA para demonstração")
-    
-    dates = pd.date_range(end=datetime.now(), periods=200, freq='5min')
-    
-    # Gerar dados realistas baseados no último fechamento conhecido do IBOVESPA (~128.000)
-    base_price = 128000
-    prices = [base_price]
-    
-    for _ in range(199):
-        change = np.random.normal(0, 0.002)  # Volatilidade de 0.2%
-        new_price = prices[-1] * (1 + change)
-        prices.append(new_price)
-    
-    df = pd.DataFrame({
-        'open': prices,
-        'close': [p * (1 + np.random.normal(0, 0.001)) for p in prices],
-        'high': [p * (1 + abs(np.random.normal(0, 0.003))) for p in prices],
-        'low': [p * (1 - abs(np.random.normal(0, 0.003))) for p in prices],
-        'volume': [np.random.randint(5e9, 15e9) for _ in prices]
-    }, index=dates)
-    
-    return df
-
-# ==========================================
-# CALCULAR SCORE
-# ==========================================
-
-def calculate_score(df):
-    """Calcular score baseado em indicadores"""
-    
-    tema_series, tema_vel = tema(df['close'])
-    kalman_series = kalman_filter(df['close'])
-    entropy_series = shannon_entropy(df['close'])
-    fisher_series = fisher_transform(df['high'], df['low'])
-    hurst_series = hurst_exponent(df['close'])
-    z_score_series = z_score(df['close'])
-    
-    score = 0
-    count = 0
-    
-    # TEMA Velocity
-    if not pd.isna(tema_vel.iloc[-1]):
-        score += 15 if tema_vel.iloc[-1] > 0 else -15
-        count += 1
-    
-    # Hurst
-    if not pd.isna(hurst_series.iloc[-1]):
-        h = hurst_series.iloc[-1]
-        score += 20 if h > 0.5 else -10
-        count += 1
-    
-    # Fisher
-    if not pd.isna(fisher_series.iloc[-1]):
-        f = fisher_series.iloc[-1]
-        if f > 2:
-            score -= 15
-        elif f < -2:
-            score += 15
-        count += 1
-    
-    # Entropy
-    if not pd.isna(entropy_series.iloc[-1]):
-        if entropy_series.iloc[-1] < 1.5:
-            score += 10
-        count += 1
-    
-    if count > 0:
-        score = score / count
-    
-    return score, {
-        'tema': tema_series,
-        'tema_vel': tema_vel,
-        'kalman': kalman_series,
-        'entropy': entropy_series,
-        'fisher': fisher_series,
-        'hurst': hurst_series,
-        'z_score': z_score_series
-    }
+    return None
 
 # ==========================================
 # INTERFACE
 # ==========================================
 
-st.markdown("<h1 style='text-align: center;'>📊 PROFITONE - IBOVESPA</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #888;'>Sistema Profissional de Trading</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>🚀 PROFITONE ULTIMATE V2</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #ffffff;'>Sistema Institucional com Quantum Hunter & TurboStoch</p>", unsafe_allow_html=True)
 
 # Sidebar
-st.sidebar.title("⚙️ Configurações")
+st.sidebar.title("⚙️ Config")
 
-period_map = {
-    "1 dia": "1d",
-    "5 dias": "5d",
-    "1 mês": "1mo"
-}
+modo_operacao = st.sidebar.selectbox(
+    "Modo de Operação:",
+    ["Scalp (5min)", "Day Trade (15min)", "Swing (60min)"],
+    index=1
+)
 
-period_label = st.sidebar.selectbox("Período:", list(period_map.keys()), index=0)
-period = period_map[period_label]
+modo_map = {"Scalp (5min)": 1, "Day Trade (15min)": 2, "Swing (60min)": 3}
+modo = modo_map[modo_operacao]
 
-timeframe_map = {
-    "5 minutos": "5m",
-    "15 minutos": "15m",
-    "1 hora": "1h"
-}
-
-timeframe_label = st.sidebar.selectbox("Timeframe:", list(timeframe_map.keys()), index=0)
-timeframe = timeframe_map[timeframe_label]
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Indicadores")
-
-show_tema = st.sidebar.checkbox("TEMA", value=True)
-show_kalman = st.sidebar.checkbox("Kalman", value=True)
-show_entropy = st.sidebar.checkbox("Entropia", value=True)
-show_fisher = st.sidebar.checkbox("Fisher", value=True)
-show_hurst = st.sidebar.checkbox("Hurst", value=True)
+timeframe = st.sidebar.selectbox("Timeframe:", ["5m", "15m", "1h"], index=0)
 
 # Abas
-tab1, tab2 = st.tabs(["📊 Tempo Real", "📈 Histórico"])
+tab1, tab2, tab3 = st.tabs(["🎯 WIN Principal", "📊 Monitor Multi-Ativos", "⚡ Força em Tempo Real"])
 
-# ABA 1: TEMPO REAL
+# ==========================================
+# ABA 1: WIN PRINCIPAL
+# ==========================================
+
 with tab1:
     
-    placeholder = st.empty()
+    placeholder1 = st.empty()
     
-    with placeholder.container():
+    with placeholder1.container():
         
-        with st.spinner("📥 Carregando dados do IBOVESPA..."):
-            df = get_ibovespa_data(period=period, interval=timeframe)
+        df_win = get_market_data("IBOV", timeframe)
         
-        if df is not None and len(df) > 50:
+        if df_win is not None and len(df_win) > 100:
             
             now = datetime.now().strftime("%H:%M:%S")
-            st.success(f"✅ Dados carregados: {len(df)} candles | Última atualização: {now}")
+            st.success(f"✅ IBOVESPA: {len(df_win)} candles | {now}")
             
-            # Calcular score
-            score, indicators = calculate_score(df)
+            # Quantum Hunter
+            score_qh, ml, mr, vwap = quantum_hunter_v13(df_win, modo=modo)
+            
+            # TurboStoch
+            stc, fisher, hurst = turbo_stoch_win(df_win)
+            
+            # Score atual
+            score_atual = score_qh.iloc[-1]
             
             # SIGNAL BOARD
-            if score > 5:
+            if score_atual > 15:
                 st.markdown(f"""
                 <div class="signal-board signal-up">
-                    <div>🚀 COMPRA FORTE</div>
-                    <div style="font-size: 80px; margin-top: 15px;">{score:.1f}</div>
+                    <div>🚀 COMPRA INSTITUCIONAL</div>
+                    <div style="font-size: 80px; margin-top: 15px;">+{score_atual:.1f}</div>
                 </div>
                 """, unsafe_allow_html=True)
-            elif score < -5:
+            elif score_atual < -15:
                 st.markdown(f"""
                 <div class="signal-board signal-down">
-                    <div>📉 VENDA FORTE</div>
-                    <div style="font-size: 80px; margin-top: 15px;">{score:.1f}</div>
+                    <div>📉 VENDA INSTITUCIONAL</div>
+                    <div style="font-size: 80px; margin-top: 15px;">{score_atual:.1f}</div>
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                st.info(f"⚖️ Mercado Neutro | Score: {score:.1f}")
+                st.info(f"⚖️ Neutro | Score: {score_atual:.1f}")
             
             st.markdown("---")
             
             # Métricas
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
-            current = df['close'].iloc[-1]
-            prev = df['close'].iloc[-2]
-            change_pct = ((current - prev) / prev * 100) if prev > 0 else 0
+            current = df_win['close'].iloc[-1]
+            prev = df_win['close'].iloc[-2]
+            change = ((current - prev) / prev * 100) if prev > 0 else 0
             
             with col1:
-                st.metric("💰 IBOVESPA", f"{current:,.0f}", f"{change_pct:+.2f}%")
+                st.metric("💰 IBOVESPA", f"{current:,.0f}", f"{change:+.2f}%")
             
             with col2:
-                if not pd.isna(indicators['hurst'].iloc[-1]):
-                    h = indicators['hurst'].iloc[-1]
-                    regime = "Tendência" if h > 0.5 else "Lateral"
-                    st.metric("📊 Regime", regime, f"H: {h:.2f}")
+                st.metric("🎯 Quantum Score", f"{score_atual:.1f}")
             
             with col3:
-                if not pd.isna(indicators['entropy'].iloc[-1]):
-                    ent = indicators['entropy'].iloc[-1]
-                    st.metric("⚛️ Entropia", f"{ent:.2f}")
+                st.metric("📊 TurboStoch", f"{stc.iloc[-1]:.1f}")
             
             with col4:
-                vol = df['volume'].iloc[-1]
-                st.metric("📦 Volume", f"{vol/1e9:.1f}B")
+                h = hurst.iloc[-1]
+                regime = "Trend" if h > 0.5 else "Lateral"
+                st.metric("🌀 Hurst", regime, f"{h:.2f}")
+            
+            with col5:
+                forca = calcular_forca_win(df_win)
+                st.metric("⚡ Força WIN", f"{forca:.0f}/100")
             
             st.markdown("---")
             
             # GRÁFICO
-            st.subheader("📊 Análise Técnica")
+            st.subheader("📊 Análise Completa")
             
             fig = make_subplots(
-                rows=3, cols=1,
+                rows=4, cols=1,
                 shared_xaxes=True,
                 vertical_spacing=0.02,
-                row_heights=[0.5, 0.25, 0.25],
-                subplot_titles=('IBOVESPA', 'Osciladores', 'Regime')
+                row_heights=[0.4, 0.2, 0.2, 0.2],
+                subplot_titles=('IBOVESPA + Quantum', 'Quantum Hunter Score', 'TurboStoch', 'Hurst')
             )
             
+            # Candlestick
             fig.add_trace(go.Candlestick(
-                x=df.index,
-                open=df['open'],
-                high=df['high'],
-                low=df['low'],
-                close=df['close'],
+                x=df_win.index,
+                open=df_win['open'],
+                high=df_win['high'],
+                low=df_win['low'],
+                close=df_win['close'],
                 increasing_line_color='#00ff88',
                 decreasing_line_color='#ff4444'
             ), row=1, col=1)
             
-            if show_tema:
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=indicators['tema'],
-                    name='TEMA', line=dict(color='#00d9ff', width=2)
-                ), row=1, col=1)
+            # Médias Quantum
+            fig.add_trace(go.Scatter(
+                x=df_win.index, y=ml,
+                name='Média Lenta', line=dict(color='#ff00ff', width=2)
+            ), row=1, col=1)
             
-            if show_kalman:
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=indicators['kalman'],
-                    name='Kalman', line=dict(color='#ff00ff', width=2)
-                ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=df_win.index, y=mr,
+                name='Média Rápida', line=dict(color='#00d9ff', width=2)
+            ), row=1, col=1)
             
-            if show_fisher:
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=indicators['fisher'],
-                    name='Fisher', line=dict(color='#00d9ff')
-                ), row=2, col=1)
-                fig.add_hline(y=2, line_dash="dash", line_color="red", row=2, col=1)
-                fig.add_hline(y=-2, line_dash="dash", line_color="green", row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=df_win.index, y=vwap,
+                name='VWAP', line=dict(color='#ffaa00', width=2, dash='dash')
+            ), row=1, col=1)
             
-            if show_hurst:
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=indicators['hurst'],
-                    name='Hurst', line=dict(color='#00ff88')
-                ), row=3, col=1)
-                fig.add_hline(y=0.5, line_dash="dash", line_color="white", row=3, col=1)
+            # Quantum Score (histograma colorido)
+            colors_qh = ['#00ff88' if s > 0 else '#ff4444' for s in score_qh]
             
-            if show_entropy:
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=indicators['entropy'],
-                    name='Entropy', line=dict(color='#ffaa00')
-                ), row=3, col=1)
+            fig.add_trace(go.Bar(
+                x=df_win.index, y=score_qh,
+                marker_color=colors_qh,
+                name='Quantum Score',
+                showlegend=False
+            ), row=2, col=1)
+            
+            fig.add_hline(y=60, line_dash="dash", line_color="white", row=2, col=1)
+            fig.add_hline(y=-60, line_dash="dash", line_color="white", row=2, col=1)
+            
+            # TurboStoch
+            fig.add_trace(go.Scatter(
+                x=df_win.index, y=stc,
+                name='Schaff', line=dict(color='#00ff88', width=3)
+            ), row=3, col=1)
+            
+            fig.add_trace(go.Scatter(
+                x=df_win.index, y=fisher,
+                name='Fisher', line=dict(color='#ffffff', width=1, dash='dot')
+            ), row=3, col=1)
+            
+            fig.add_hline(y=90, line_dash="dot", line_color="gray", row=3, col=1)
+            fig.add_hline(y=10, line_dash="dot", line_color="gray", row=3, col=1)
+            
+            # Hurst
+            fig.add_trace(go.Scatter(
+                x=df_win.index, y=hurst,
+                name='Hurst', line=dict(color='#ffaa00', width=2),
+                fill='tozeroy'
+            ), row=4, col=1)
+            
+            fig.add_hline(y=0.5, line_dash="dash", line_color="white", row=4, col=1)
             
             fig.update_layout(
                 template='plotly_dark',
-                height=900,
+                height=1100,
                 xaxis_rangeslider_visible=False,
                 plot_bgcolor='#000000',
-                paper_bgcolor='#000000'
+                paper_bgcolor='#000000',
+                font=dict(color='#ffffff')
             )
             
             st.plotly_chart(fig, use_container_width=True)
         
         else:
-            st.error("❌ Não foi possível carregar dados do IBOVESPA")
-            st.info("💡 Verifique sua conexão ou aguarde alguns segundos")
+            st.error("❌ Erro ao carregar IBOVESPA")
 
-# ABA 2: HISTÓRICO
+# ==========================================
+# ABA 2: MONITOR MULTI-ATIVOS
+# ==========================================
+
 with tab2:
-    st.info("📊 Histórico será implementado em breve. Por enquanto, use a aba Tempo Real.")
+    
+    st.subheader("📊 Monitor de Ativos em Tempo Real")
+    
+    ativos = ["IBOV", "DOLAR", "SP500", "NASDAQ", "DOW"]
+    
+    placeholder2 = st.empty()
+    
+    with placeholder2.container():
+        
+        cols = st.columns(len(ativos))
+        
+        for idx, ativo in enumerate(ativos):
+            with cols[idx]:
+                
+                df_ativo = get_market_data(ativo, timeframe)
+                
+                if df_ativo is not None and len(df_ativo) > 50:
+                    
+                    score, _, _, _ = quantum_hunter_v13(df_ativo, modo=modo)
+                    forca = calcular_forca_win(df_ativo)
+                    
+                    current = df_ativo['close'].iloc[-1]
+                    prev = df_ativo['close'].iloc[-2]
+                    change = ((current - prev) / prev * 100) if prev > 0 else 0
+                    
+                    score_atual = score.iloc[-1]
+                    
+                    # Card colorido
+                    if score_atual > 15:
+                        card_color = "#00ff88"
+                        signal = "🚀 COMPRA"
+                    elif score_atual < -15:
+                        card_color = "#ff4444"
+                        signal = "📉 VENDA"
+                    else:
+                        card_color = "#ffaa00"
+                        signal = "⚖️ NEUTRO"
+                    
+                    st.markdown(f"""
+                    <div class="asset-card" style="border-left-color: {card_color};">
+                        <h3 style="color: {card_color};">{ativo}</h3>
+                        <p style="font-size: 24px; color: #ffffff;">{current:,.2f}</p>
+                        <p style="color: {'#00ff88' if change > 0 else '#ff4444'};">{change:+.2f}%</p>
+                        <hr style="border-color: {card_color};">
+                        <p><strong>{signal}</strong></p>
+                        <p>Score: {score_atual:.1f}</p>
+                        <p>Força: {forca:.0f}/100</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                else:
+                    st.error(f"❌ {ativo}")
+
+# ==========================================
+# ABA 3: FORÇA EM TEMPO REAL
+# ==========================================
+
+with tab3:
+    
+    st.subheader("⚡ Força do WIN em Tempo Real")
+    
+    placeholder3 = st.empty()
+    
+    with placeholder3.container():
+        
+        df_forca = get_market_data("IBOV", timeframe)
+        
+        if df_forca is not None and len(df_forca) > 100:
+            
+            forca_historica = []
+            
+            for i in range(max(50, len(df_forca) - 200), len(df_forca)):
+                df_slice = df_forca.iloc[:i+1]
+                if len(df_slice) > 50:
+                    forca = calcular_forca_win(df_slice)
+                    forca_historica.append({'timestamp': df_slice.index[-1], 'forca': forca})
+            
+            df_forca_hist = pd.DataFrame(forca_historica).set_index('timestamp')
+            
+            # Gauge atual
+            forca_atual = df_forca_hist['forca'].iloc[-1]
+            
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=forca_atual,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                title={'text': "Força Institucional WIN", 'font': {'size': 24, 'color': '#ffffff'}},
+                delta={'reference': 50},
+                gauge={
+                    'axis': {'range': [None, 100], 'tickcolor': '#ffffff'},
+                    'bar': {'color': "#00d9ff"},
+                    'bgcolor': "black",
+                    'borderwidth': 2,
+                    'bordercolor': "#ffffff",
+                    'steps': [
+                        {'range': [0, 30], 'color': '#ff4444'},
+                        {'range': [30, 70], 'color': '#ffaa00'},
+                        {'range': [70, 100], 'color': '#00ff88'}
+                    ],
+                    'threshold': {
+                        'line': {'color': "white", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 80
+                    }
+                }
+            ))
+            
+            fig_gauge.update_layout(
+                paper_bgcolor="black",
+                font={'color': "#ffffff", 'family': "Arial"},
+                height=400
+            )
+            
+            st.plotly_chart(fig_gauge, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # Histórico de força
+            st.subheader("📈 Evolução da Força")
+            
+            fig_linha = go.Figure()
+            
+            fig_linha.add_trace(go.Scatter(
+                x=df_forca_hist.index,
+                y=df_forca_hist['forca'],
+                mode='lines+markers',
+                line=dict(color='#00d9ff', width=3),
+                fill='tozeroy',
+                fillcolor='rgba(0, 217, 255, 0.2)'
+            ))
+            
+            fig_linha.add_hline(y=70, line_dash="dash", line_color="green", annotation_text="Força Alta")
+            fig_linha.add_hline(y=30, line_dash="dash", line_color="red", annotation_text="Força Baixa")
+            
+            fig_linha.update_layout(
+                template='plotly_dark',
+                height=400,
+                yaxis_title="Força (%)",
+                plot_bgcolor='#000000',
+                paper_bgcolor='#000000',
+                font=dict(color='#ffffff')
+            )
+            
+            st.plotly_chart(fig_linha, use_container_width=True)
+        
+        else:
+            st.error("❌ Erro ao calcular força")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: #444;'>📊 ProfitOne IBOVESPA</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: #ffffff;'>🚀 ProfitOne Ultimate V2 | Quantum Hunter + TurboStoch</div>", unsafe_allow_html=True)
