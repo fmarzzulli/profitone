@@ -47,20 +47,33 @@ st.markdown("""
 
 @st.cache_data(ttl=60)
 def get_data(symbol, period="5d", interval="15m"):
-    """Busca dados do Yahoo Finance"""
+    """Busca dados do Yahoo Finance com fallback"""
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period=period, interval=interval)
         
         if df.empty:
-            return pd.DataFrame()
+            # Tentar com período maior
+            st.warning(f"⚠️ Tentando período alternativo para {symbol}...")
+            df = ticker.history(period="1mo", interval="1h")
+        
+        if df.empty:
+            return pd.DataFrame(), None
         
         df.columns = [col.lower() for col in df.columns]
         df = df.reset_index()
-        return df
+        
+        return df, None
+        
     except Exception as e:
-        st.error(f"Erro ao buscar dados: {e}")
-        return pd.DataFrame()
+        error_msg = str(e)
+        
+        # Se for erro de rate limit, sugerir esperar
+        if "rate limit" in error_msg.lower() or "429" in error_msg:
+            return pd.DataFrame(), "⏰ Yahoo Finance está temporariamente indisponível (rate limit). Tente novamente em 1 minuto."
+        
+        # Outros erros
+        return pd.DataFrame(), f"❌ Erro ao buscar dados: {error_msg}"
 
 
 def calculate_ema(data, period):
@@ -214,16 +227,36 @@ def main():
     with st.sidebar:
         st.markdown("## ⚙️ Configurações")
         
-        symbol = st.text_input("📊 Símbolo", value="^BVSP")
+        # Símbolos sugeridos
+        symbols_preset = {
+            "Ibovespa (^BVSP)": "^BVSP",
+            "PETR4.SA (Petrobras)": "PETR4.SA",
+            "VALE3.SA (Vale)": "VALE3.SA",
+            "ITUB4.SA (Itaú)": "ITUB4.SA",
+            "BBDC4.SA (Bradesco)": "BBDC4.SA",
+            "S&P 500 (^GSPC)": "^GSPC",
+            "Bitcoin (BTC-USD)": "BTC-USD",
+            "Custom": "CUSTOM"
+        }
+        
+        selected_preset = st.selectbox(
+            "📊 Ativo",
+            list(symbols_preset.keys()),
+            index=0
+        )
+        
+        if symbols_preset[selected_preset] == "CUSTOM":
+            symbol = st.text_input("Digite o símbolo:", value="^BVSP")
+        else:
+            symbol = symbols_preset[selected_preset]
         
         timeframe = st.selectbox(
             "⏱️ Timeframe",
-            ["5 min", "15 min", "1 hora", "1 dia"],
-            index=1
+            ["15 min", "1 hora", "1 dia"],
+            index=0
         )
         
         interval_map = {
-            "5 min": "5m",
             "15 min": "15m",
             "1 hora": "1h",
             "1 dia": "1d"
@@ -231,23 +264,36 @@ def main():
         interval = interval_map[timeframe]
         
         period_map = {
-            "5m": "1d",
             "15m": "5d",
             "1h": "1mo",
             "1d": "6mo"
         }
         period = period_map.get(interval, "5d")
         
+        st.markdown("---")
+        
         if st.button("🔄 Atualizar", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### 💡 Dicas")
+        st.caption("• Use 15 min para day trade")
+        st.caption("• Use 1 hora para swing trade")
+        st.caption("• Use 1 dia para position")
     
     # Buscar dados
-    with st.spinner("📊 Carregando dados..."):
-        df = get_data(symbol, period, interval)
+    with st.spinner(f"📊 Carregando dados de {symbol}..."):
+        df, error = get_data(symbol, period, interval)
+    
+    if error:
+        st.error(error)
+        st.info("💡 **Sugestões:**\n- Aguarde 1 minuto e clique em 'Atualizar'\n- Tente outro ativo no menu lateral\n- Use timeframe de 1 hora ou 1 dia")
+        return
     
     if df.empty:
-        st.error("❌ Sem dados disponíveis. Verifique o símbolo.")
+        st.error(f"❌ Sem dados disponíveis para **{symbol}**.")
+        st.info("💡 **Possíveis causas:**\n- Símbolo incorreto\n- Yahoo Finance temporariamente indisponível\n- Timeframe muito curto\n\n**Tente:**\n- Usar outro ativo (ex: PETR4.SA, BTC-USD)\n- Timeframe de 1 hora ou 1 dia")
         return
     
     # Garantir que o índice seja datetime
@@ -264,13 +310,17 @@ def main():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("🎯 Score", f"{result['score']:.1f}")
+        score_color = "normal" if abs(result['score']) < 30 else ("inverse" if result['score'] > 0 else "off")
+        st.metric("🎯 Score", f"{result['score']:.1f}", delta=f"{result['score']:.1f}")
     
     with col2:
         st.metric("📊 RSI", f"{result['rsi']:.1f}")
     
     with col3:
-        st.metric("💰 Preço", f"R$ {df['close'].iloc[-1]:.2f}")
+        current_price = df['close'].iloc[-1]
+        prev_price = df['close'].iloc[-2] if len(df) > 1 else current_price
+        price_change = current_price - prev_price
+        st.metric("💰 Preço", f"R$ {current_price:.2f}", delta=f"{price_change:+.2f}")
     
     with col4:
         signal_colors = {
@@ -296,17 +346,26 @@ def main():
         st.write(f"**EMA 9:** R$ {result['ema9']:.2f}")
         st.write(f"**EMA 21:** R$ {result['ema21']:.2f}")
         st.write(f"**RSI 14:** {result['rsi']:.1f}")
+        
+        # Interpretação do RSI
+        if result['rsi'] > 70:
+            st.warning("⚠️ RSI indica sobrecompra")
+        elif result['rsi'] < 30:
+            st.success("✅ RSI indica sobrevenda")
+        else:
+            st.info("ℹ️ RSI em zona neutra")
     
     with col2:
         st.markdown("### 📌 Informações")
         st.write(f"**Símbolo:** {symbol}")
         st.write(f"**Timeframe:** {timeframe}")
         st.write(f"**Candles:** {len(df)}")
+        st.write(f"**Período:** {period}")
         st.write(f"**Última atualização:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
     
     # Footer
     st.markdown("---")
-    st.caption("📈 ProfitOne - Sistema de Análise Técnica")
+    st.caption("📈 ProfitOne - Sistema de Análise Técnica | Versão 1.0")
     st.caption("⚠️ Este sistema é apenas para fins educacionais. Não constitui recomendação de investimento.")
 
 
