@@ -477,7 +477,7 @@ def main():
     st.markdown("## 📈 Gráfico de Análise")
     
     fig = create_main_chart(df, signals, master_score)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # ========== TABS DE ANÁLISE ==========
     st.markdown("---")
