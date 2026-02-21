@@ -1,7 +1,7 @@
 """
-ProfitOne V4.0 - INSTITUTIONAL TRADING SYSTEM
+ProfitOne V4.1 - INSTITUTIONAL TRADING SYSTEM
 Sistema de análise técnica de nível institucional
-VERSÃO CORRIGIDA - GRÁFICOS 100% FUNCIONAIS
+VERSÃO FINAL - TIMEFRAMES INTRADAY CORRIGIDOS
 """
 
 import streamlit as st
@@ -28,7 +28,7 @@ from sklearn.preprocessing import StandardScaler
 # CONFIGURAÇÃO DA PÁGINA
 # ============================================================================
 st.set_page_config(
-    page_title="ProfitOne V4.0 | Institutional",
+    page_title="ProfitOne V4.1 | Institutional",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -39,26 +39,22 @@ st.set_page_config(
 # ============================================================================
 st.markdown("""
 <style>
-    /* Background gradient */
     .stApp {
         background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
     }
     
-    /* Títulos */
     h1, h2, h3 {
         color: #00ff88 !important;
         font-weight: 700 !important;
         text-shadow: 0 0 20px rgba(0,255,136,0.3);
     }
     
-    /* Métricas */
     [data-testid="stMetricValue"] {
         font-size: 2rem !important;
         color: #00ff88 !important;
         font-weight: 700 !important;
     }
     
-    /* Cards de módulos */
     .module-card {
         background: linear-gradient(135deg, #1a1f3a 0%, #2a2f4a 100%);
         border-left: 4px solid #00ff88;
@@ -81,12 +77,10 @@ st.markdown("""
         color: #ffffff;
     }
     
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, #0a0e27 0%, #1a1f3a 100%);
     }
     
-    /* Botões */
     .stButton>button {
         background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%);
         color: #0a0e27;
@@ -109,7 +103,6 @@ st.markdown("""
 # SÍMBOLOS B3 E MAPEAMENTO
 # ============================================================================
 B3_SYMBOLS = {
-    # Futuros B3 (usando proxies do Yahoo Finance)
     'WINFUT': {
         'yahoo': '^BVSP',
         'multiplier': 1.0,
@@ -134,8 +127,6 @@ B3_SYMBOLS = {
         'name': 'DOL Março/2025',
         'type': 'future'
     },
-    
-    # Ações B3
     'PETR4.SA': {'yahoo': 'PETR4.SA', 'multiplier': 1.0, 'name': 'Petrobras PN', 'type': 'stock'},
     'VALE3.SA': {'yahoo': 'VALE3.SA', 'multiplier': 1.0, 'name': 'Vale ON', 'type': 'stock'},
     'ITUB4.SA': {'yahoo': 'ITUB4.SA', 'multiplier': 1.0, 'name': 'Itaú PN', 'type': 'stock'},
@@ -144,12 +135,8 @@ B3_SYMBOLS = {
     'ABEV3.SA': {'yahoo': 'ABEV3.SA', 'multiplier': 1.0, 'name': 'Ambev ON', 'type': 'stock'},
     'MGLU3.SA': {'yahoo': 'MGLU3.SA', 'multiplier': 1.0, 'name': 'Magazine Luiza ON', 'type': 'stock'},
     'ELET3.SA': {'yahoo': 'ELET3.SA', 'multiplier': 1.0, 'name': 'Eletrobras ON', 'type': 'stock'},
-    
-    # Crypto (fallback para futuros quando Yahoo falha)
     'BTCUSDT': {'yahoo': 'BTC-USD', 'multiplier': 1.0, 'name': 'Bitcoin', 'type': 'crypto'},
     'ETHUSDT': {'yahoo': 'ETH-USD', 'multiplier': 1.0, 'name': 'Ethereum', 'type': 'crypto'},
-    
-    # Internacional
     '^GSPC': {'yahoo': '^GSPC', 'multiplier': 1.0, 'name': 'S&P 500', 'type': 'index'},
     '^IXIC': {'yahoo': '^IXIC', 'multiplier': 1.0, 'name': 'NASDAQ', 'type': 'index'},
     '^DJI': {'yahoo': '^DJI', 'multiplier': 1.0, 'name': 'Dow Jones', 'type': 'index'},
@@ -168,17 +155,52 @@ def resolve_symbol(symbol):
 @st.cache_data(ttl=60)
 def get_data_institutional(symbol, period='5d', interval='15m'):
     """
-    Busca dados com múltiplos fallbacks
+    Busca dados com múltiplos fallbacks OTIMIZADOS para cada timeframe
     """
     yahoo_symbol, multiplier = resolve_symbol(symbol)
     
-    # Lista de tentativas (período, intervalo)
-    attempts = [
-        (period, interval),
-        ('1mo', '1h'),
-        ('3mo', '1d'),
-        ('1y', '1d'),
-    ]
+    # Mapeamento correto de períodos para cada intervalo (limites do Yahoo Finance)
+    interval_fallbacks = {
+        '1m': [
+            ('7d', '1m'),    # Yahoo limita 1m a 7 dias
+            ('5d', '1m'),
+            ('1d', '1m')
+        ],
+        '5m': [
+            ('60d', '5m'),   # Yahoo limita 5m a 60 dias
+            ('30d', '5m'),
+            ('5d', '5m')
+        ],
+        '15m': [
+            ('60d', '15m'),  # Yahoo limita 15m a 60 dias
+            ('30d', '15m'),
+            ('5d', '15m')
+        ],
+        '1h': [
+            ('730d', '1h'),  # 2 anos
+            ('90d', '1h'),
+            ('30d', '1h')
+        ],
+        '4h': [
+            ('730d', '4h'),
+            ('90d', '4h')
+        ],
+        '1d': [
+            ('5y', '1d'),
+            ('1y', '1d'),
+            ('3mo', '1d')
+        ]
+    }
+    
+    # Selecionar tentativas baseadas no intervalo
+    if interval in interval_fallbacks:
+        attempts = interval_fallbacks[interval]
+    else:
+        attempts = [
+            (period, interval),
+            ('1mo', '1h'),
+            ('1y', '1d')
+        ]
     
     for attempt_period, attempt_interval in attempts:
         try:
@@ -191,8 +213,12 @@ def get_data_institutional(symbol, period='5d', interval='15m'):
             )
             
             if df is not None and len(df) > 20:
-                # Limpar dados
                 df = df.copy()
+                
+                # Verificar se é MultiIndex
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.droplevel(1)
+                
                 df.columns = df.columns.str.lower()
                 
                 # Aplicar multiplicador
@@ -205,15 +231,51 @@ def get_data_institutional(symbol, period='5d', interval='15m'):
                 if not isinstance(df.index, pd.DatetimeIndex):
                     df.index = pd.to_datetime(df.index)
                 
-                # Remover NaNs
                 df = df.dropna()
                 
                 if len(df) >= 20:
+                    # Mostrar qual período foi carregado
+                    date_range = (df.index[-1] - df.index[0]).days
+                    st.success(f"✅ **Dados carregados:** {len(df)} barras | {date_range} dias ({attempt_period}/{attempt_interval})")
                     return df
+                    
         except Exception as e:
             continue
     
-    # Se tudo falhar, retornar DataFrame vazio
+    # Fallback final: 1 dia
+    try:
+        df = yf.download(
+            yahoo_symbol,
+            period='1y',
+            interval='1d',
+            progress=False,
+            show_errors=False
+        )
+        
+        if df is not None and len(df) > 20:
+            df = df.copy()
+            
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+            
+            df.columns = df.columns.str.lower()
+            
+            if multiplier != 1.0:
+                for col in ['open', 'high', 'low', 'close']:
+                    if col in df.columns:
+                        df[col] *= multiplier
+            
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index)
+            
+            df = df.dropna()
+            
+            if len(df) >= 20:
+                st.warning(f"⚠️ **Fallback aplicado:** Usando dados diários (1 ano)")
+                return df
+    except:
+        pass
+    
     return pd.DataFrame()
 
 # ============================================================================
@@ -257,8 +319,6 @@ def calculate_vwap(df):
 def calculate_cvd(df):
     """Cumulative Volume Delta"""
     try:
-        # Volume de compra: close > open
-        # Volume de venda: close < open
         delta = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
         cvd = pd.Series(delta, index=df.index).cumsum()
         return cvd
@@ -278,11 +338,9 @@ def calculate_market_profile(df, num_levels=20):
             mask = (df['close'] >= bins[i]) & (df['close'] < bins[i + 1])
             tpo_counts[i] = mask.sum()
         
-        # POC (Point of Control)
         poc_idx = np.argmax(tpo_counts)
         poc_price = (bins[poc_idx] + bins[poc_idx + 1]) / 2
         
-        # Value Area (70% do volume)
         total_tpo = tpo_counts.sum()
         target_tpo = total_tpo * 0.7
         
@@ -320,7 +378,7 @@ def calculate_market_profile(df, num_levels=20):
         }
 
 def detect_absorption(df, threshold=0.3):
-    """Detecta zonas de absorção (alto volume, baixa variação de preço)"""
+    """Detecta zonas de absorção"""
     try:
         price_change = abs(df['close'] - df['open']) / df['open']
         volume_norm = (df['volume'] - df['volume'].min()) / (df['volume'].max() - df['volume'].min() + 1e-10)
@@ -331,7 +389,7 @@ def detect_absorption(df, threshold=0.3):
         return pd.Series([False] * len(df), index=df.index)
 
 def detect_imbalance(df, threshold=0.7):
-    """Detecta desbalanço de volume (compra vs venda)"""
+    """Detecta desbalanço de volume"""
     try:
         delta = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
         imbalance_ratio = abs(delta) / (df['volume'] + 1e-10)
@@ -344,11 +402,11 @@ def detect_imbalance(df, threshold=0.7):
         return pd.Series([False] * len(df), index=df.index), ['NEUTRAL'] * len(df)
 
 # ============================================================================
-# MACHINE LEARNING - XGBOOST
+# MACHINE LEARNING
 # ============================================================================
 
 class InstitutionalMLPredictor:
-    """Preditor ML de nível institucional com XGBoost"""
+    """Preditor ML com XGBoost"""
     
     def __init__(self):
         if XGBOOST_AVAILABLE:
@@ -369,52 +427,42 @@ class InstitutionalMLPredictor:
         
         self.scaler = StandardScaler()
         self.is_trained = False
-        self.feature_importance = {}
     
     def prepare_features(self, df):
-        """Engenharia de features profissional (20+ features)"""
+        """Engenharia de features"""
         try:
             features = pd.DataFrame(index=df.index)
             
-            # Returns (múltiplos períodos)
             for period in [1, 3, 5, 10]:
                 features[f'return_{period}'] = df['close'].pct_change(period)
             
-            # RSI
             features['rsi_14'] = calculate_rsi(df['close'], 14)
             features['rsi_21'] = calculate_rsi(df['close'], 21)
             
-            # EMAs
             for period in [9, 21, 50]:
                 features[f'ema_{period}'] = calculate_ema(df['close'], period)
                 features[f'price_to_ema_{period}'] = df['close'] / features[f'ema_{period}']
             
-            # EMA differences
             features['ema_9_21_diff'] = (features['ema_9'] - features['ema_21']) / features['ema_21']
             features['ema_21_50_diff'] = (features['ema_21'] - features['ema_50']) / features['ema_50']
             
-            # Volume
             features['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
             features['cvd'] = calculate_cvd(df)
             features['cvd_change'] = features['cvd'].pct_change(5)
             
-            # VWAP
             vwap = calculate_vwap(df)
             features['vwap_distance'] = (df['close'] - vwap) / vwap
             
-            # Volatility
             features['atr'] = (df['high'] - df['low']).rolling(14).mean()
             features['volatility'] = df['close'].pct_change().rolling(20).std()
             
-            # Market Profile
             mp = calculate_market_profile(df)
             features['poc_distance'] = (df['close'] - mp['poc']) / mp['poc']
             
-            # Limpar NaNs
             features = features.fillna(method='ffill').fillna(0)
             
             return features
-        except Exception as e:
+        except:
             return pd.DataFrame()
     
     def train(self, df, lookforward=5):
@@ -428,11 +476,9 @@ class InstitutionalMLPredictor:
             if features.empty:
                 return False
             
-            # Target: direção do preço nos próximos N bars
             future_return = df['close'].pct_change(lookforward).shift(-lookforward)
             target = (future_return > 0).astype(int)
             
-            # Remover últimas linhas (sem target)
             valid_idx = target.notna()
             X = features[valid_idx]
             y = target[valid_idx]
@@ -440,59 +486,45 @@ class InstitutionalMLPredictor:
             if len(X) < 50:
                 return False
             
-            # Train/test split
             split_idx = int(len(X) * 0.8)
             X_train = X.iloc[:split_idx]
             y_train = y.iloc[:split_idx]
             
-            # Escalar features
             X_train_scaled = self.scaler.fit_transform(X_train)
             
-            # Treinar
             self.model.fit(X_train_scaled, y_train)
             self.is_trained = True
             
-            # Feature importance
-            if hasattr(self.model, 'feature_importances_'):
-                self.feature_importance = dict(zip(
-                    X.columns,
-                    self.model.feature_importances_
-                ))
-            
             return True
-        except Exception as e:
+        except:
             return False
     
     def predict(self, df):
         """Faz predição"""
         try:
             if not self.is_trained:
-                return 0, 0.5  # neutral, 50% confidence
+                return 0, 0.5
             
             features = self.prepare_features(df)
             
             if features.empty:
                 return 0, 0.5
             
-            # Última linha
             X_last = features.iloc[[-1]]
             X_scaled = self.scaler.transform(X_last)
             
-            # Predição
             pred = self.model.predict(X_scaled)[0]
             
-            # Probabilidade
             if hasattr(self.model, 'predict_proba'):
                 proba = self.model.predict_proba(X_scaled)[0]
                 confidence = max(proba)
             else:
                 confidence = 0.6
             
-            # Converter para sinal (-1, 0, 1)
             signal = 1 if pred == 1 else -1
             
             return signal, confidence
-        except Exception as e:
+        except:
             return 0, 0.5
 
 # ============================================================================
@@ -500,9 +532,7 @@ class InstitutionalMLPredictor:
 # ============================================================================
 
 def calculate_institutional_score(df):
-    """
-    Calcula score institucional agregado
-    """
+    """Calcula score institucional agregado"""
     try:
         result = {
             'master_score': 0,
@@ -514,7 +544,7 @@ def calculate_institutional_score(df):
         if len(df) < 50:
             return result
         
-        # ----- TREND (15%) -----
+        # Trend
         ema9 = calculate_ema(df['close'], 9).iloc[-1]
         ema21 = calculate_ema(df['close'], 21).iloc[-1]
         ema50 = calculate_ema(df['close'], 50).iloc[-1]
@@ -536,7 +566,7 @@ def calculate_institutional_score(df):
         
         result['components']['trend'] = trend_score
         
-        # ----- MOMENTUM (12%) -----
+        # Momentum
         rsi = calculate_rsi(df['close'], 14).iloc[-1]
         
         momentum_score = 0
@@ -555,7 +585,7 @@ def calculate_institutional_score(df):
         
         result['components']['momentum'] = momentum_score
         
-        # ----- VOLUME (18%) -----
+        # Volume
         cvd = calculate_cvd(df).iloc[-1]
         cvd_change = calculate_cvd(df).pct_change(10).iloc[-1]
         
@@ -575,7 +605,7 @@ def calculate_institutional_score(df):
         
         result['components']['volume'] = volume_score
         
-        # ----- ORDER FLOW (20%) -----
+        # Order Flow
         absorption = detect_absorption(df).iloc[-5:].sum()
         imbalance, direction = detect_imbalance(df)
         recent_imbalance = imbalance.iloc[-5:].sum()
@@ -593,7 +623,7 @@ def calculate_institutional_score(df):
         
         result['components']['order_flow'] = flow_score
         
-        # ----- ML PREDICTION (15%) -----
+        # ML Prediction
         ml_predictor = InstitutionalMLPredictor()
         
         if len(df) >= 200:
@@ -605,7 +635,7 @@ def calculate_institutional_score(df):
         result['components']['ml_prediction'] = ml_score
         result['confidence'] = ml_confidence
         
-        # ----- VWAP POSITION (10%) -----
+        # VWAP
         vwap = calculate_vwap(df).iloc[-1]
         vwap_distance = (current_price - vwap) / vwap
         
@@ -625,7 +655,7 @@ def calculate_institutional_score(df):
         
         result['components']['vwap'] = vwap_score
         
-        # ----- MARKET PROFILE (10%) -----
+        # Market Profile
         mp = calculate_market_profile(df)
         poc_distance = (current_price - mp['poc']) / mp['poc']
         
@@ -641,7 +671,7 @@ def calculate_institutional_score(df):
         
         result['components']['market_profile'] = profile_score
         
-        # ----- MASTER SCORE (WEIGHTED AVERAGE) -----
+        # Master Score
         weights = {
             'trend': 0.15,
             'momentum': 0.12,
@@ -660,7 +690,7 @@ def calculate_institutional_score(df):
         master_score = max(-100, min(100, master_score))
         result['master_score'] = round(master_score, 2)
         
-        # ----- SIGNAL -----
+        # Signal
         if master_score > 60:
             result['signal'] = 'STRONG BUY'
         elif master_score > 30:
@@ -672,7 +702,6 @@ def calculate_institutional_score(df):
         else:
             result['signal'] = 'STRONG SELL'
         
-        # Adicionar indicadores extras
         result['rsi'] = rsi
         result['ema9'] = ema9
         result['ema21'] = ema21
@@ -686,7 +715,6 @@ def calculate_institutional_score(df):
         return result
         
     except Exception as e:
-        st.error(f"Erro no cálculo do score: {e}")
         return {
             'master_score': 0,
             'signal': 'ERROR',
@@ -704,21 +732,16 @@ def calculate_institutional_score(df):
         }
 
 # ============================================================================
-# GRÁFICO INSTITUCIONAL - 100% FUNCIONAL
+# GRÁFICO
 # ============================================================================
 
 def create_institutional_chart(df, result):
-    """
-    Gráfico institucional SIMPLIFICADO e 100% FUNCIONAL
-    4 painéis principais
-    """
+    """Gráfico institucional 4 painéis"""
     try:
-        # Validação de dados
         if len(df) < 20:
-            st.warning("⚠️ Dados insuficientes para plotar gráfico (mínimo 20 barras)")
+            st.warning("⚠️ Dados insuficientes (mínimo 20 barras)")
             return None
         
-        # ----- CRIAR SUBPLOTS (4 PAINÉIS) -----
         fig = make_subplots(
             rows=4, cols=1,
             row_heights=[0.5, 0.2, 0.15, 0.15],
@@ -737,8 +760,6 @@ def create_institutional_chart(df, result):
             ]
         )
         
-        # ========== PAINEL 1: CANDLESTICKS + INDICADORES ==========
-        
         # Candlesticks
         fig.add_trace(
             go.Candlestick(
@@ -749,9 +770,7 @@ def create_institutional_chart(df, result):
                 close=df['close'],
                 name='Price',
                 increasing_line_color='#00ff88',
-                decreasing_line_color='#ff0051',
-                increasing_fillcolor='#00ff88',
-                decreasing_fillcolor='#ff0051'
+                decreasing_line_color='#ff0051'
             ),
             row=1, col=1
         )
@@ -762,141 +781,52 @@ def create_institutional_chart(df, result):
             ema21 = calculate_ema(df['close'], 21)
             ema50 = calculate_ema(df['close'], 50)
             
-            fig.add_trace(
-                go.Scatter(
-                    x=df.index, 
-                    y=ema9, 
-                    name='EMA 9', 
-                    line=dict(color='#00ff88', width=1.5),
-                    opacity=0.7
-                ),
-                row=1, col=1
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=df.index, 
-                    y=ema21, 
-                    name='EMA 21', 
-                    line=dict(color='#00ccff', width=1.5),
-                    opacity=0.7
-                ),
-                row=1, col=1
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=df.index, 
-                    y=ema50, 
-                    name='EMA 50', 
-                    line=dict(color='#ffaa00', width=1.5),
-                    opacity=0.7
-                ),
-                row=1, col=1
-            )
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao calcular EMAs: {e}")
+            fig.add_trace(go.Scatter(x=df.index, y=ema9, name='EMA 9', line=dict(color='#00ff88', width=1.5), opacity=0.7), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=ema21, name='EMA 21', line=dict(color='#00ccff', width=1.5), opacity=0.7), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=ema50, name='EMA 50', line=dict(color='#ffaa00', width=1.5), opacity=0.7), row=1, col=1)
+        except:
+            pass
         
         # VWAP
         try:
             vwap = calculate_vwap(df)
-            fig.add_trace(
-                go.Scatter(
-                    x=df.index, 
-                    y=vwap, 
-                    name='VWAP', 
-                    line=dict(color='#ff00ff', width=2, dash='dash'),
-                    opacity=0.8
-                ),
-                row=1, col=1
-            )
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao calcular VWAP: {e}")
-        
-        # Market Profile Lines
-        try:
-            fig.add_hline(
-                y=result['poc'], 
-                line=dict(color='yellow', width=2, dash='dot'),
-                annotation_text="POC",
-                annotation_position="right",
-                row=1, col=1
-            )
-            fig.add_hline(
-                y=result['vah'], 
-                line=dict(color='orange', width=1, dash='dot'),
-                annotation_text="VAH",
-                annotation_position="right",
-                row=1, col=1
-            )
-            fig.add_hline(
-                y=result['val'], 
-                line=dict(color='orange', width=1, dash='dot'),
-                annotation_text="VAL",
-                annotation_position="right",
-                row=1, col=1
-            )
-        except Exception as e:
+            fig.add_trace(go.Scatter(x=df.index, y=vwap, name='VWAP', line=dict(color='#ff00ff', width=2, dash='dash'), opacity=0.8), row=1, col=1)
+        except:
             pass
         
-        # ========== PAINEL 2: RSI ==========
+        # Market Profile
+        try:
+            fig.add_hline(y=result['poc'], line=dict(color='yellow', width=2, dash='dot'), annotation_text="POC", annotation_position="right", row=1, col=1)
+            fig.add_hline(y=result['vah'], line=dict(color='orange', width=1, dash='dot'), annotation_text="VAH", annotation_position="right", row=1, col=1)
+            fig.add_hline(y=result['val'], line=dict(color='orange', width=1, dash='dot'), annotation_text="VAL", annotation_position="right", row=1, col=1)
+        except:
+            pass
+        
+        # RSI
         try:
             rsi = calculate_rsi(df['close'], 14)
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=df.index, 
-                    y=rsi, 
-                    name='RSI', 
-                    line=dict(color='#00ccff', width=2),
-                    fill='tozeroy',
-                    fillcolor='rgba(0, 204, 255, 0.2)'
-                ),
-                row=2, col=1
-            )
-            
+            fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#00ccff', width=2), fill='tozeroy', fillcolor='rgba(0, 204, 255, 0.2)'), row=2, col=1)
             fig.add_hline(y=70, line=dict(color='red', width=1, dash='dash'), row=2, col=1)
             fig.add_hline(y=50, line=dict(color='gray', width=1, dash='dot'), row=2, col=1)
             fig.add_hline(y=30, line=dict(color='green', width=1, dash='dash'), row=2, col=1)
-            
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao calcular RSI: {e}")
+        except:
+            pass
         
-        # ========== PAINEL 3: VOLUME + CVD ==========
-        
-        # Volume bars
+        # Volume
         try:
             colors = ['#00ff88' if c > o else '#ff0051' for c, o in zip(df['close'], df['open'])]
-            
-            fig.add_trace(
-                go.Bar(
-                    x=df.index, 
-                    y=df['volume'], 
-                    name='Volume', 
-                    marker=dict(color=colors, opacity=0.5)
-                ),
-                row=3, col=1
-            )
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao plotar Volume: {e}")
+            fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume', marker=dict(color=colors, opacity=0.5)), row=3, col=1)
+        except:
+            pass
         
         # CVD
         try:
             cvd = calculate_cvd(df)
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=df.index,
-                    y=cvd,
-                    name='CVD',
-                    line=dict(color='#ff00ff', width=2),
-                    yaxis='y2'
-                ),
-                row=3, col=1,
-                secondary_y=True
-            )
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao calcular CVD: {e}")
+            fig.add_trace(go.Scatter(x=df.index, y=cvd, name='CVD', line=dict(color='#ff00ff', width=2), yaxis='y2'), row=3, col=1, secondary_y=True)
+        except:
+            pass
         
-        # ========== PAINEL 4: MASTER SCORE ==========
+        # Score
         try:
             score_series = []
             for i in range(len(df)):
@@ -905,36 +835,15 @@ def create_institutional_chart(df, result):
                 else:
                     ema9_val = ema9.iloc[i] if i < len(ema9) else df['close'].iloc[i]
                     ema21_val = ema21.iloc[i] if i < len(ema21) else df['close'].iloc[i]
-                    
-                    if ema9_val > ema21_val:
-                        score_series.append(50)
-                    else:
-                        score_series.append(-50)
+                    score_series.append(50 if ema9_val > ema21_val else -50)
             
             score_color = ['#00ff88' if s > 0 else '#ff0051' for s in score_series]
-            
-            fig.add_trace(
-                go.Bar(
-                    x=df.index,
-                    y=score_series,
-                    name='Score',
-                    marker=dict(color=score_color, opacity=0.7)
-                ),
-                row=4, col=1
-            )
-            
-            fig.add_hline(
-                y=result['master_score'],
-                line=dict(color='yellow', width=2, dash='dash'),
-                annotation_text=f"Current: {result['master_score']:.1f}",
-                annotation_position="right",
-                row=4, col=1
-            )
-            
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao plotar Score: {e}")
+            fig.add_trace(go.Bar(x=df.index, y=score_series, name='Score', marker=dict(color=score_color, opacity=0.7)), row=4, col=1)
+            fig.add_hline(y=result['master_score'], line=dict(color='yellow', width=2, dash='dash'), annotation_text=f"Current: {result['master_score']:.1f}", annotation_position="right", row=4, col=1)
+        except:
+            pass
         
-        # ========== LAYOUT ==========
+        # Layout
         fig.update_layout(
             height=1400,
             template='plotly_dark',
@@ -942,21 +851,14 @@ def create_institutional_chart(df, result):
             plot_bgcolor='#1a1f3a',
             font=dict(color='#ffffff', size=11),
             showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.01,
-                xanchor="right",
-                x=1,
-                bgcolor='rgba(26, 31, 58, 0.8)'
-            ),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1, bgcolor='rgba(26, 31, 58, 0.8)'),
             xaxis_rangeslider_visible=False,
             hovermode='x unified',
             margin=dict(l=60, r=60, t=80, b=60)
         )
         
-        fig.update_xaxes(showgrid=True, gridcolor='#2a2f4a', gridwidth=1)
-        fig.update_yaxes(showgrid=True, gridcolor='#2a2f4a', gridwidth=1)
+        fig.update_xaxes(showgrid=True, gridcolor='#2a2f4a')
+        fig.update_yaxes(showgrid=True, gridcolor='#2a2f4a')
         
         fig.update_yaxes(title_text="Preço", row=1, col=1)
         fig.update_yaxes(title_text="RSI", row=2, col=1)
@@ -967,27 +869,12 @@ def create_institutional_chart(df, result):
         return fig
         
     except Exception as e:
-        st.error(f"❌ ERRO ao criar gráfico: {e}")
+        st.error(f"❌ Erro ao criar gráfico: {e}")
         
-        # Fallback
         try:
             fig_fallback = go.Figure()
-            fig_fallback.add_trace(
-                go.Candlestick(
-                    x=df.index,
-                    open=df['open'],
-                    high=df['high'],
-                    low=df['low'],
-                    close=df['close'],
-                    name='Price'
-                )
-            )
-            fig_fallback.update_layout(
-                height=600,
-                template='plotly_dark',
-                title='⚠️ Gráfico Simplificado (Fallback)',
-                xaxis_rangeslider_visible=False
-            )
+            fig_fallback.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'))
+            fig_fallback.update_layout(height=600, template='plotly_dark', title='⚠️ Gráfico Simplificado', xaxis_rangeslider_visible=False)
             return fig_fallback
         except:
             return None
@@ -1000,15 +887,9 @@ def main():
     """Função principal"""
     
     st.markdown("""
-    <h1 style='text-align: center; font-size: 3rem;'>
-        📈 ProfitOne V4.0
-    </h1>
-    <h3 style='text-align: center; color: #00ff88; font-weight: 300;'>
-        INSTITUTIONAL TRADING SYSTEM
-    </h3>
-    <p style='text-align: center; color: #888; margin-bottom: 2rem;'>
-        Sistema de análise técnica com ML, Order Flow & Charts HD
-    </p>
+    <h1 style='text-align: center; font-size: 3rem;'>📈 ProfitOne V4.1</h1>
+    <h3 style='text-align: center; color: #00ff88; font-weight: 300;'>INSTITUTIONAL TRADING SYSTEM</h3>
+    <p style='text-align: center; color: #888; margin-bottom: 2rem;'>Sistema com ML, Order Flow & Charts HD - Timeframes corrigidos</p>
     """, unsafe_allow_html=True)
     
     # SIDEBAR
@@ -1037,16 +918,32 @@ def main():
             """, unsafe_allow_html=True)
         
         st.markdown("#### ⏱️ Timeframe")
+        
+        # CORRIGIDO: Períodos máximos do Yahoo Finance
         timeframe_map = {
-            '1 Minuto': ('5d', '1m'),
-            '5 Minutos': ('5d', '5m'),
-            '15 Minutos': ('5d', '15m'),
-            '1 Hora': ('1mo', '1h'),
-            '4 Horas': ('3mo', '4h'),
-            '1 Dia': ('1y', '1d')
+            '1 Minuto (7 dias)': ('7d', '1m'),
+            '5 Minutos (60 dias)': ('60d', '5m'),
+            '15 Minutos (60 dias)': ('60d', '15m'),
+            '1 Hora (2 anos)': ('730d', '1h'),
+            '4 Horas (2 anos)': ('730d', '4h'),
+            '1 Dia (5 anos)': ('5y', '1d')
         }
+        
         timeframe_label = st.radio("Período", list(timeframe_map.keys()), index=2)
         period, interval = timeframe_map[timeframe_label]
+        
+        # Aviso de limitação intraday
+        if interval in ['1m', '5m', '15m']:
+            st.warning(f"""
+            ⚠️ **Limitação do Yahoo Finance:**
+            
+            Timeframes intraday têm dados limitados:
+            - **1 minuto**: máximo 7 dias
+            - **5 minutos**: máximo 60 dias
+            - **15 minutos**: máximo 60 dias
+            
+            Para análise histórica longa, use **1 Hora** ou **1 Dia**.
+            """)
         
         st.markdown("---")
         if st.button("🔄 Atualizar Dados", use_container_width=True):
@@ -1059,13 +956,13 @@ def main():
         st.markdown("---")
         st.markdown("""
         <div style='background: #1a1f3a; padding: 15px; border-radius: 8px;'>
-            <strong style='color: #00ff88;'>✨ V4.0:</strong><br>
+            <strong style='color: #00ff88;'>✨ V4.1:</strong><br>
             <ul style='margin-top: 10px; color: #ccc; font-size: 0.85rem;'>
+                <li>✅ Timeframes intraday corrigidos</li>
                 <li>✅ XGBoost ML</li>
                 <li>✅ Order Flow</li>
                 <li>✅ Market Profile</li>
                 <li>✅ CVD Analysis</li>
-                <li>✅ 4-Panel Chart</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -1077,8 +974,7 @@ def main():
     if debug_mode:
         st.markdown("### 🔍 Debug Info")
         st.write(f"**Símbolo:** {symbol}")
-        st.write(f"**Period:** {period}")
-        st.write(f"**Interval:** {interval}")
+        st.write(f"**Period:** {period} | **Interval:** {interval}")
         st.write(f"**Dados:** {len(df) if not df.empty else 0} barras")
         if not df.empty:
             st.write(f"**Colunas:** {list(df.columns)}")
@@ -1089,11 +985,26 @@ def main():
         ❌ **Sem dados para {symbol}**
         
         Tente:
-        - Timeframe maior (1 Dia)
+        - Timeframe maior (1 Hora ou 1 Dia)
         - Outro ativo
         - Verificar se mercado está aberto
         """)
         return
+    
+    # Mostrar informações dos dados
+    if not df.empty:
+        date_range = (df.index[-1] - df.index[0]).days
+        
+        col_info1, col_info2, col_info3 = st.columns(3)
+        
+        with col_info1:
+            st.metric("📊 Total de Barras", f"{len(df):,}")
+        
+        with col_info2:
+            st.metric("📅 Período", f"{date_range} dias")
+        
+        with col_info3:
+            st.metric("🕐 Última Atualização", df.index[-1].strftime("%d/%m %H:%M"))
     
     # CALCULAR SCORE
     with st.spinner('🧮 Calculando análise...'):
@@ -1246,7 +1157,7 @@ def main():
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.markdown(f"""
     <div style='text-align: center; color: #666; font-size: 0.85rem; padding: 20px 0;'>
-        <strong>ProfitOne V4.0</strong> | {current_time} | {len(df)} barras | {symbol}<br>
+        <strong>ProfitOne V4.1 Final</strong> | {current_time} | {len(df)} barras | {symbol}<br>
         <em>⚠️ Apenas educacional - não é recomendação de investimento</em>
     </div>
     """, unsafe_allow_html=True)
