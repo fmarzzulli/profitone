@@ -5,86 +5,74 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
+from scipy.stats import entropy
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier
 import time
 from datetime import datetime, timedelta
+from collections import deque
 import warnings
 warnings.filterwarnings('ignore')
 
-# Imports ML
+# ML Imports
 try:
     import xgboost as xgb
     from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense, Dropout
+    from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+    from tensorflow.keras.optimizers import Adam
+    import lightgbm as lgb
     ML_AVAILABLE = True
 except:
     ML_AVAILABLE = False
-    
-# Imports Scraper
-try:
-    from bs4 import BeautifulSoup
-    SCRAPER_AVAILABLE = True
-except:
-    SCRAPER_AVAILABLE = False
 
 # ========================================
-# CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO
 # ========================================
 st.set_page_config(
-    page_title="ProfitOne Ultimate V3",
+    page_title="ProfitOne Ultra V4",
     layout="wide",
     page_icon="🚀"
 )
 
 # ========================================
-# CSS PERSONALIZADO - FONTE PRETA
+# CSS - FONTE PRETA
 # ========================================
 st.markdown("""
 <style>
-    /* FUNDO E TEMA GERAL */
     .main {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     }
     
-    .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    /* FONTE PRETA EM TODO O SISTEMA */
     * {
         color: #000000 !important;
         font-family: 'Segoe UI', Arial, sans-serif !important;
     }
     
-    h1, h2, h3, h4, h5, h6, p, span, div, label {
+    h1, h2, h3 {
         color: #000000 !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
     }
     
-    /* CARDS DE MÉTRICAS */
     .metric-card {
         background: rgba(255, 255, 255, 0.95);
         padding: 20px;
         border-radius: 15px;
         box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        backdrop-filter: blur(10px);
-        border: 2px solid rgba(255,255,255,0.3);
         margin: 10px 0;
     }
     
-    .metric-value {
-        font-size: 32px !important;
-        font-weight: bold !important;
-        color: #000000 !important;
+    .confidence-high {
+        border-left: 5px solid #00ff88;
     }
     
-    .metric-label {
-        font-size: 14px !important;
-        color: #000000 !important;
-        opacity: 0.8;
+    .confidence-medium {
+        border-left: 5px solid #ffd700;
     }
     
-    /* SIGNAL BOARD */
+    .confidence-low {
+        border-left: 5px solid #ff4444;
+    }
+    
     .signal-board {
         background: rgba(255, 255, 255, 0.95);
         padding: 30px;
@@ -95,43 +83,10 @@ st.markdown("""
         border: 3px solid;
     }
     
-    .signal-compra {
-        border-color: #00ff88;
-        background: linear-gradient(135deg, rgba(0,255,136,0.2), rgba(0,255,136,0.05));
-    }
+    .signal-compra { border-color: #00ff88; }
+    .signal-venda { border-color: #ff4444; }
+    .signal-neutro { border-color: #ffd700; }
     
-    .signal-venda {
-        border-color: #ff4444;
-        background: linear-gradient(135deg, rgba(255,68,68,0.2), rgba(255,68,68,0.05));
-    }
-    
-    .signal-neutro {
-        border-color: #ffd700;
-        background: linear-gradient(135deg, rgba(255,215,0,0.2), rgba(255,215,0,0.05));
-    }
-    
-    /* TABELAS */
-    .dataframe {
-        background: rgba(255, 255, 255, 0.9) !important;
-        color: #000000 !important;
-    }
-    
-    .dataframe th {
-        background: rgba(102, 126, 234, 0.8) !important;
-        color: #000000 !important;
-        font-weight: bold !important;
-    }
-    
-    .dataframe td {
-        color: #000000 !important;
-    }
-    
-    /* SIDEBAR */
-    .css-1d391kg, .css-1oe6wy4 {
-        background: rgba(255, 255, 255, 0.95) !important;
-    }
-    
-    /* BOTÕES */
     .stButton > button {
         background: linear-gradient(135deg, #667eea, #764ba2) !important;
         color: #ffffff !important;
@@ -139,43 +94,166 @@ st.markdown("""
         padding: 10px 30px !important;
         border-radius: 10px !important;
         font-weight: bold !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(0,0,0,0.3) !important;
-    }
-    
-    /* SELECTBOX */
-    .stSelectbox {
-        color: #000000 !important;
-    }
-    
-    /* MÉTRICAS STREAMLIT */
-    [data-testid="stMetricValue"] {
-        color: #000000 !important;
-        font-size: 28px !important;
-        font-weight: bold !important;
-    }
-    
-    [data-testid="stMetricLabel"] {
-        color: #000000 !important;
-        font-size: 14px !important;
-    }
-    
-    [data-testid="stMetricDelta"] {
-        color: #000000 !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ========================================
-# FUNÇÕES DE INDICADORES TÉCNICOS
+# INDICADORES AVANÇADOS
+# ========================================
+
+def vpin_indicator(df, window=20):
+    """
+    VPIN - Volume-Synchronized Probability of Informed Trading
+    Detecta presença de traders informados (institucionais)
+    Fórmula: Ehlers & Easley (2012)
+    """
+    
+    # Separar volume de compra e venda
+    df['buy_volume'] = np.where(df['close'] > df['open'], df['volume'], 0)
+    df['sell_volume'] = np.where(df['close'] < df['open'], df['volume'], 0)
+    
+    # Volume bucket
+    volume_bucket = df['volume'].rolling(window).sum() / window
+    
+    # VPIN calculation
+    buy_vol_sum = df['buy_volume'].rolling(window).sum()
+    sell_vol_sum = df['sell_volume'].rolling(window).sum()
+    
+    vpin = abs(buy_vol_sum - sell_vol_sum) / (buy_vol_sum + sell_vol_sum + 1e-10)
+    
+    return vpin
+
+def order_flow_imbalance(df):
+    """
+    Order Flow Imbalance (OFI)
+    Mede desequilíbrio entre ordens de compra e venda
+    """
+    
+    # Delta de volume
+    delta = np.where(df['close'] > df['open'], df['volume'], -df['volume'])
+    
+    # Cumulative delta
+    cumulative_delta = pd.Series(delta).cumsum()
+    
+    # OFI normalizado
+    ofi = cumulative_delta / df['volume'].sum()
+    
+    return pd.Series(delta, index=df.index), pd.Series(cumulative_delta, index=df.index)
+
+def detect_iceberg_orders(df, threshold=2.0):
+    """
+    Detecta ordens iceberg (institucionais)
+    Baseado em volume anormal vs movimento de preço
+    """
+    
+    # Volume vs price change ratio
+    price_change = df['close'].pct_change().abs()
+    volume_ratio = df['volume'] / df['volume'].rolling(20).mean()
+    
+    # Icebergs: alto volume, baixa mudança de preço
+    iceberg_score = volume_ratio / (price_change + 1e-10)
+    
+    # Normalizar
+    iceberg_score = (iceberg_score - iceberg_score.mean()) / (iceberg_score.std() + 1e-10)
+    
+    return iceberg_score
+
+def absorption_analysis(df):
+    """
+    Análise de Absorção de Liquidez
+    Detecta quando institucionais absorvem ordens de varejo
+    """
+    
+    # Wick analysis (sombras grandes = absorção)
+    upper_wick = df['high'] - df[['open', 'close']].max(axis=1)
+    lower_wick = df[['open', 'close']].min(axis=1) - df['low']
+    body = abs(df['close'] - df['open'])
+    
+    # Upper absorption (rejeição de alta)
+    upper_absorption = upper_wick / (body + 1e-10)
+    
+    # Lower absorption (rejeição de baixa)
+    lower_absorption = lower_wick / (body + 1e-10)
+    
+    # Net absorption
+    net_absorption = lower_absorption - upper_absorption
+    
+    return net_absorption
+
+def smart_money_index(df):
+    """
+    Smart Money Index (SMI)
+    Rastreia movimentação de dinheiro institucional
+    """
+    
+    # Intraday momentum
+    intraday = df['close'] - df['open']
+    
+    # Weighted by volume
+    smart_money = (intraday * df['volume']).cumsum()
+    
+    # Normalize
+    smi = (smart_money - smart_money.min()) / (smart_money.max() - smart_money.min() + 1e-10) * 100
+    
+    return smi
+
+def institutional_footprint(df):
+    """
+    Footprint Chart Simulation
+    Estima % de participação institucional vs varejo
+    """
+    
+    # VPIN (alta = institucional)
+    vpin = vpin_indicator(df)
+    
+    # Iceberg detection
+    iceberg = detect_iceberg_orders(df)
+    
+    # Absorption
+    absorption = absorption_analysis(df)
+    
+    # Smart Money Index
+    smi = smart_money_index(df)
+    
+    # Combine all signals
+    institutional_score = (
+        vpin.iloc[-1] * 0.3 +
+        (iceberg.iloc[-1] / 3) * 0.25 +
+        (absorption.iloc[-1] + 1) * 0.2 +
+        (smi.iloc[-1] / 100) * 0.25
+    )
+    
+    # Clamp between 0 and 1
+    institutional_score = np.clip(institutional_score, 0, 1)
+    
+    # Convert to percentages
+    # Institucional: 30-70% (baseado em score)
+    institucional = 30 + institutional_score * 40
+    
+    # Bancos: 20-40%
+    bancos = 20 + (1 - institutional_score) * 20
+    
+    # Varejo: remainder
+    varejo = 100 - institucional - bancos
+    
+    return {
+        'institucional': institucional,
+        'bancos': bancos,
+        'varejo': varejo,
+        'confidence': institutional_score * 100,
+        'vpin': vpin.iloc[-1],
+        'iceberg': iceberg.iloc[-1],
+        'absorption': absorption.iloc[-1],
+        'smi': smi.iloc[-1]
+    }
+
+# ========================================
+# INDICADORES TÉCNICOS (do código anterior)
 # ========================================
 
 def tema(series, period=21):
-    """Triple Exponential Moving Average + Velocidade"""
+    """Triple Exponential Moving Average"""
     ema1 = series.ewm(span=period, adjust=False).mean()
     ema2 = ema1.ewm(span=period, adjust=False).mean()
     ema3 = ema2.ewm(span=period, adjust=False).mean()
@@ -183,53 +261,25 @@ def tema(series, period=21):
     velocity = tema_line.diff()
     return tema_line, velocity
 
-def kalman_filter(series, process_variance=0.01):
-    """Filtro de Kalman para redução de ruído"""
-    n = len(series)
-    estimate = np.zeros(n)
-    error_estimate = np.ones(n)
-    
-    estimate[0] = series.iloc[0]
-    
-    for i in range(1, n):
-        prediction = estimate[i-1]
-        error_prediction = error_estimate[i-1] + process_variance
-        
-        kalman_gain = error_prediction / (error_prediction + 1)
-        estimate[i] = prediction + kalman_gain * (series.iloc[i] - prediction)
-        error_estimate[i] = (1 - kalman_gain) * error_prediction
-    
-    return pd.Series(estimate, index=series.index)
+def rsi(series, period=14):
+    """RSI"""
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-def shannon_entropy(series, window=14):
-    """Entropia de Shannon - Mede caos do mercado"""
-    def entropy(data):
-        if len(data) == 0:
-            return 0
-        hist, _ = np.histogram(data, bins=10, density=True)
-        hist = hist[hist > 0]
-        return -np.sum(hist * np.log2(hist))
-    
-    return series.rolling(window).apply(entropy, raw=True)
-
-def fisher_transform(series, period=10):
-    """Fisher Transform - Detecção de reversões"""
-    high = series.rolling(period).max()
-    low = series.rolling(period).min()
-    
-    value = 2 * ((series - low) / (high - low) - 0.5)
-    value = value.clip(-0.999, 0.999)
-    
-    fisher = 0.5 * np.log((1 + value) / (1 - value))
-    signal = fisher.shift(1)
-    
-    return fisher, signal
+def vwap(df):
+    """VWAP"""
+    if 'volume' not in df.columns:
+        return df['close']
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    return (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
 
 def hurst_exponent(series, max_lag=20):
-    """Hurst Exponent - Detecta tendência vs lateralização"""
-    lags = range(2, max_lag)
+    """Hurst Exponent"""
+    lags = range(2, min(max_lag, len(series)//2))
     tau = []
-    
     for lag in lags:
         pp = np.subtract(series[lag:].values, series[:-lag].values)
         tau.append(np.std(pp))
@@ -240,45 +290,27 @@ def hurst_exponent(series, max_lag=20):
     reg = np.polyfit(np.log(lags), np.log(tau), 1)
     return reg[0]
 
-def z_score(series, period=20):
-    """Z-Score - Desvios da média"""
-    mean = series.rolling(period).mean()
-    std = series.rolling(period).std()
-    return (series - mean) / std
-
-def vwap(df):
-    """Volume Weighted Average Price"""
-    if 'volume' not in df.columns:
-        return df['close']
-    typical_price = (df['high'] + df['low'] + df['close']) / 3
-    return (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
-
-def rsi(series, period=14):
-    """Relative Strength Index"""
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+def fisher_transform(series, period=10):
+    """Fisher Transform"""
+    high = series.rolling(period).max()
+    low = series.rolling(period).min()
+    value = 2 * ((series - low) / (high - low + 1e-10) - 0.5)
+    value = value.clip(-0.999, 0.999)
+    fisher = 0.5 * np.log((1 + value) / (1 - value))
+    return fisher, fisher.shift(1)
 
 def schaff_trend_cycle(df, short=23, long=50, cycle=10):
-    """Schaff Trend Cycle - Momentum cíclico"""
+    """Schaff Trend Cycle"""
     close = df['close']
-    
-    # MACD
     ema_short = close.ewm(span=short, adjust=False).mean()
     ema_long = close.ewm(span=long, adjust=False).mean()
     macd = ema_short - ema_long
     
-    # Stochastic do MACD
     macd_min = macd.rolling(cycle).min()
     macd_max = macd.rolling(cycle).max()
     stoch1 = 100 * (macd - macd_min) / (macd_max - macd_min + 1e-10)
-    
-    # Smoothing
     stoch1 = stoch1.ewm(span=3, adjust=False).mean()
     
-    # Second stochastic
     stoch1_min = stoch1.rolling(cycle).min()
     stoch1_max = stoch1.rolling(cycle).max()
     stc = 100 * (stoch1 - stoch1_min) / (stoch1_max - stoch1_min + 1e-10)
@@ -286,47 +318,37 @@ def schaff_trend_cycle(df, short=23, long=50, cycle=10):
     return stc.ewm(span=3, adjust=False).mean()
 
 # ========================================
-# QUANTUM HUNTER V13
+# QUANTUM HUNTER V13 ULTRA
 # ========================================
 
-def quantum_hunter_v13(df, modo=1, sensibilidade=1.5):
+def quantum_hunter_v13_ultra(df, modo=1):
     """
-    QUANTUM HUNTER V13 - Institutional Trend Detector
-    Retorna: score (-100 a +100), media_lenta, media_rapida, vwap_line
+    Quantum Hunter V13 Ultra - Com validação de confiança
+    Retorna: score, confiança, componentes
     """
     
-    # Configuração por modo
     configs = {
-        1: {'lento': 21, 'rapido': 8, 'rsi': 9},   # Scalp 5m
-        2: {'lento': 34, 'rapido': 13, 'rsi': 14}, # Day 15m
-        3: {'lento': 72, 'rapido': 21, 'rsi': 21}  # Swing 1h
+        1: {'lento': 21, 'rapido': 8, 'rsi': 9},
+        2: {'lento': 34, 'rapido': 13, 'rsi': 14},
+        3: {'lento': 72, 'rapido': 21, 'rsi': 21}
     }
     
     config = configs.get(modo, configs[2])
-    
     close = df['close']
     
-    # Médias exponenciais
+    # Médias
     media_lenta = close.ewm(span=config['lento'], adjust=False).mean()
     media_rapida = close.ewm(span=config['rapido'], adjust=False).mean()
-    
-    # VWAP
     vwap_line = vwap(df)
-    
-    # RSI
     rsi_line = rsi(close, config['rsi'])
     
-    # === CÁLCULO DO SCORE ===
-    
-    # 1. Força da tendência (40%)
+    # Score components
     tendencia = (media_rapida.iloc[-1] - media_lenta.iloc[-1]) / media_lenta.iloc[-1] * 100
     score_tendencia = np.clip(tendencia * 10, -40, 40)
     
-    # 2. Posição vs VWAP (30%)
     distancia_vwap = (close.iloc[-1] - vwap_line.iloc[-1]) / vwap_line.iloc[-1] * 100
     score_vwap = np.clip(distancia_vwap * 3, -30, 30)
     
-    # 3. RSI (30%)
     rsi_val = rsi_line.iloc[-1]
     if rsi_val > 55:
         score_rsi = 30
@@ -339,79 +361,214 @@ def quantum_hunter_v13(df, modo=1, sensibilidade=1.5):
     else:
         score_rsi = 0
     
-    # Score total
     score_total = score_tendencia + score_vwap + score_rsi
     
-    # Suavização (EMA de 3 períodos simulada)
-    score_suavizado = np.clip(score_total * sensibilidade, -100, 100)
+    # CONFIDENCE CALCULATION
+    # Baseado em:
+    # 1. Volatilidade (baixa vol = maior confiança)
+    volatility = close.pct_change().rolling(20).std().iloc[-1]
+    vol_confidence = 100 * (1 - np.clip(volatility * 100, 0, 1))
     
-    return score_suavizado, media_lenta, media_rapida, vwap_line
+    # 2. Alinhamento de indicadores
+    alignment = abs(score_tendencia/40) + abs(score_vwap/30) + abs(score_rsi/30)
+    alignment_confidence = alignment / 3 * 100
+    
+    # 3. Volume confirmation
+    volume_ratio = df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]
+    volume_confidence = np.clip(volume_ratio * 50, 0, 100)
+    
+    # Combined confidence
+    confidence = (vol_confidence * 0.3 + alignment_confidence * 0.4 + volume_confidence * 0.3)
+    
+    return {
+        'score': np.clip(score_total, -100, 100),
+        'confidence': confidence,
+        'components': {
+            'tendencia': score_tendencia,
+            'vwap': score_vwap,
+            'rsi': score_rsi
+        },
+        'media_lenta': media_lenta,
+        'media_rapida': media_rapida,
+        'vwap': vwap_line
+    }
 
 # ========================================
-# TURBOSTOCH WIN
+# ENSEMBLE MACHINE LEARNING
 # ========================================
 
-def turbo_stoch_win(df):
+def prepare_ml_features(df):
+    """Prepara features para ML"""
+    
+    df = df.copy()
+    
+    # Technical features
+    df['returns'] = df['close'].pct_change()
+    df['volatility'] = df['returns'].rolling(20).std()
+    df['rsi'] = rsi(df['close'], 14)
+    
+    # MACD
+    ema12 = df['close'].ewm(span=12).mean()
+    ema26 = df['close'].ewm(span=26).mean()
+    df['macd'] = ema12 - ema26
+    
+    # Volume
+    df['volume_sma'] = df['volume'].rolling(20).mean()
+    df['volume_ratio'] = df['volume'] / df['volume_sma']
+    
+    # Bollinger
+    sma = df['close'].rolling(20).mean()
+    std = df['close'].rolling(20).std()
+    df['bb_upper'] = sma + 2*std
+    df['bb_lower'] = sma - 2*std
+    df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
+    
+    # VPIN
+    df['vpin'] = vpin_indicator(df)
+    
+    # Order flow
+    delta, cum_delta = order_flow_imbalance(df)
+    df['order_flow'] = delta
+    df['cum_delta'] = cum_delta
+    
+    # Target
+    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
+    
+    df = df.dropna()
+    
+    feature_cols = ['returns', 'volatility', 'rsi', 'macd', 'volume_ratio', 
+                    'bb_position', 'vpin', 'order_flow', 'cum_delta']
+    
+    return df, feature_cols
+
+@st.cache_resource
+def train_ensemble_model(df):
     """
-    TurboStoch WIN
-    Retorna: stc, fisher, hurst
+    Treina ensemble de 3 modelos
+    Retorna: modelos, scaler, metrics
     """
     
-    # Schaff Trend Cycle
-    stc = schaff_trend_cycle(df, short=24, long=52, cycle=20)
+    if not ML_AVAILABLE or df is None or len(df) < 100:
+        return None, None, None
     
-    # Fisher Transform
-    fisher_line, _ = fisher_transform(df['close'], period=10)
-    fisher_normalized = ((fisher_line - fisher_line.min()) / 
-                        (fisher_line.max() - fisher_line.min()) * 100)
+    try:
+        df_ml, feature_cols = prepare_ml_features(df)
+        
+        if len(df_ml) < 50:
+            return None, None, None
+        
+        X = df_ml[feature_cols].values
+        y = df_ml['target'].values
+        
+        # Split
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        # Scale
+        scaler = MinMaxScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Model 1: XGBoost
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=100,
+            max_depth=3,
+            learning_rate=0.1,
+            random_state=42
+        )
+        xgb_model.fit(X_train_scaled, y_train)
+        xgb_acc = xgb_model.score(X_test_scaled, y_test)
+        
+        # Model 2: LightGBM
+        lgb_model = lgb.LGBMClassifier(
+            n_estimators=100,
+            max_depth=3,
+            learning_rate=0.1,
+            random_state=42,
+            verbose=-1
+        )
+        lgb_model.fit(X_train_scaled, y_train)
+        lgb_acc = lgb_model.score(X_test_scaled, y_test)
+        
+        # Model 3: Random Forest
+        rf_model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42
+        )
+        rf_model.fit(X_train_scaled, y_train)
+        rf_acc = rf_model.score(X_test_scaled, y_test)
+        
+        # Ensemble accuracy
+        ensemble_acc = (xgb_acc + lgb_acc + rf_acc) / 3
+        
+        models = {
+            'xgb': xgb_model,
+            'lgb': lgb_model,
+            'rf': rf_model
+        }
+        
+        metrics = {
+            'xgb_acc': xgb_acc,
+            'lgb_acc': lgb_acc,
+            'rf_acc': rf_acc,
+            'ensemble_acc': ensemble_acc
+        }
+        
+        return models, scaler, metrics
+        
+    except Exception as e:
+        st.warning(f"⚠️ ML Training: {str(e)}")
+        return None, None, None
+
+def ensemble_predict(df, models, scaler):
+    """Previsão com ensemble de modelos"""
     
-    # Hurst Exponent
-    if len(df) >= 30:
-        hurst = hurst_exponent(df['close'].iloc[-30:], max_lag=20)
-    else:
-        hurst = 0.5
+    if models is None or scaler is None:
+        return 0.5, "Neutro", 0
     
-    return stc.iloc[-1] if len(stc) > 0 else 50, \
-           fisher_normalized.iloc[-1] if len(fisher_normalized) > 0 else 50, \
-           hurst
+    try:
+        df_ml, feature_cols = prepare_ml_features(df)
+        
+        if len(df_ml) == 0:
+            return 0.5, "Neutro", 0
+        
+        X_last = df_ml[feature_cols].iloc[-1:].values
+        X_scaled = scaler.transform(X_last)
+        
+        # Predictions from all models
+        xgb_proba = models['xgb'].predict_proba(X_scaled)[0][1]
+        lgb_proba = models['lgb'].predict_proba(X_scaled)[0][1]
+        rf_proba = models['rf'].predict_proba(X_scaled)[0][1]
+        
+        # Ensemble (average)
+        ensemble_proba = (xgb_proba + lgb_proba + rf_proba) / 3
+        
+        # Confidence (agreement between models)
+        std_dev = np.std([xgb_proba, lgb_proba, rf_proba])
+        confidence = 100 * (1 - std_dev)
+        
+        # Direction
+        if ensemble_proba > 0.6:
+            direction = "Alta 🚀"
+        elif ensemble_proba < 0.4:
+            direction = "Baixa 📉"
+        else:
+            direction = "Neutro ⚖️"
+        
+        return ensemble_proba, direction, confidence
+        
+    except Exception as e:
+        return 0.5, "Neutro", 0
 
 # ========================================
-# FORÇA DO WIN
-# ========================================
-
-def calcular_forca_win(df, modo=1):
-    """
-    Calcula a força do WIN baseado em múltiplos indicadores
-    Retorna: força (0-100)
-    """
-    
-    # Quantum Hunter
-    quantum_score, _, _, _ = quantum_hunter_v13(df, modo)
-    
-    # TurboStoch
-    stc, fisher, hurst = turbo_stoch_win(df)
-    
-    # Cálculo da força
-    # 40% Quantum Score (absoluto)
-    # 30% STC
-    # 30% Fisher
-    forca = (abs(quantum_score) * 0.4 + stc * 0.3 + fisher * 0.3)
-    
-    # Penaliza se mercado lateral (Hurst < 0.45)
-    if hurst < 0.45:
-        forca *= 0.5
-    
-    return np.clip(forca, 0, 100)
-
-# ========================================
-# OBTENÇÃO DE DADOS DE MERCADO
+# DATA FETCHING
 # ========================================
 
 @st.cache_data(ttl=10)
 def get_market_data(symbol, interval="5m"):
-    """
-    Obtém dados de mercado do Yahoo Finance
-    """
+    """Obtém dados do Yahoo Finance"""
     
     symbol_map = {
         "IBOV": "%5EBVSP",
@@ -422,27 +579,16 @@ def get_market_data(symbol, interval="5m"):
     }
     
     yahoo_symbol = symbol_map.get(symbol, symbol)
-    
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
     
-    params = {
-        "interval": interval,
-        "range": "1d"
-    }
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    params = {"interval": interval, "range": "1d"}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
         response = requests.get(url, params=params, headers=headers, timeout=15)
         data = response.json()
         
-        if 'chart' not in data or 'result' not in data['chart']:
-            return None
-            
         result = data['chart']['result'][0]
-        
         timestamps = result['timestamp']
         quote = result['indicators']['quote'][0]
         
@@ -461,186 +607,68 @@ def get_market_data(symbol, interval="5m"):
         return df
         
     except Exception as e:
-        st.error(f"❌ Erro ao obter dados de {symbol}: {str(e)}")
         return None
 
 # ========================================
-# SCRAPER DE DADOS PÚBLICOS B3
+# PERFORMANCE TRACKING
 # ========================================
 
-@st.cache_data(ttl=3600)
-def scrape_b3_institutional_flow():
-    """
-    Scraper de dados públicos da B3
-    Tenta obter fluxo institucional de fontes públicas
-    """
+# Initialize session state for tracking
+if 'signal_history' not in st.session_state:
+    st.session_state.signal_history = deque(maxlen=100)
+
+def track_signal(signal, price, timestamp):
+    """Rastreia sinais para análise de performance"""
+    st.session_state.signal_history.append({
+        'signal': signal,
+        'price': price,
+        'timestamp': timestamp
+    })
+
+def calculate_performance():
+    """Calcula performance histórica dos sinais"""
     
-    if not SCRAPER_AVAILABLE:
+    if len(st.session_state.signal_history) < 2:
         return None
     
-    try:
-        # Exemplo: Scraping do site Status Invest (público)
-        url = "https://statusinvest.com.br/indice/ibov"
+    history = list(st.session_state.signal_history)
+    
+    correct = 0
+    total = 0
+    
+    for i in range(len(history) - 1):
+        current = history[i]
+        next_signal = history[i + 1]
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        if current['signal'] == 'COMPRA' and next_signal['price'] > current['price']:
+            correct += 1
+        elif current['signal'] == 'VENDA' and next_signal['price'] < current['price']:
+            correct += 1
         
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Dados simulados baseados em estrutura típica
-            # Em produção, você precisaria mapear os elementos corretos
-            flow_data = {
-                'institucional': 45.0,
-                'bancos': 30.0,
-                'varejo': 25.0,
-                'timestamp': datetime.now()
-            }
-            
-            return flow_data
-        else:
-            return None
-            
-    except Exception as e:
-        st.warning(f"⚠️ Scraper B3: {str(e)}")
+        total += 1
+    
+    if total == 0:
         return None
+    
+    accuracy = (correct / total) * 100
+    
+    return {
+        'total_signals': len(history),
+        'correct': correct,
+        'accuracy': accuracy
+    }
 
 # ========================================
-# MACHINE LEARNING - PREVISÃO
-# ========================================
-
-def prepare_ml_features(df):
-    """Prepara features para ML"""
-    
-    df = df.copy()
-    
-    # Features técnicas
-    df['returns'] = df['close'].pct_change()
-    df['volatility'] = df['returns'].rolling(20).std()
-    df['rsi'] = rsi(df['close'], 14)
-    
-    # MACD
-    ema12 = df['close'].ewm(span=12).mean()
-    ema26 = df['close'].ewm(span=26).mean()
-    df['macd'] = ema12 - ema26
-    
-    # Volume
-    df['volume_sma'] = df['volume'].rolling(20).mean()
-    df['volume_ratio'] = df['volume'] / df['volume_sma']
-    
-    # Bollinger Bands
-    sma = df['close'].rolling(20).mean()
-    std = df['close'].rolling(20).std()
-    df['bb_upper'] = sma + 2*std
-    df['bb_lower'] = sma - 2*std
-    df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-    
-    # Target (1 = sobe, 0 = desce)
-    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
-    
-    df = df.dropna()
-    
-    feature_cols = ['returns', 'volatility', 'rsi', 'macd', 'volume_ratio', 'bb_position']
-    
-    return df, feature_cols
-
-@st.cache_resource
-def train_ml_model(df):
-    """
-    Treina modelo ML (XGBoost)
-    Retorna modelo treinado e scaler
-    """
-    
-    if not ML_AVAILABLE or df is None or len(df) < 100:
-        return None, None
-    
-    try:
-        df_ml, feature_cols = prepare_ml_features(df)
-        
-        if len(df_ml) < 50:
-            return None, None
-        
-        X = df_ml[feature_cols].values
-        y = df_ml['target'].values
-        
-        # Split treino/teste
-        split = int(len(X) * 0.8)
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
-        
-        # Normalização
-        scaler = MinMaxScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
-        # Treinamento XGBoost
-        model = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=3,
-            learning_rate=0.1,
-            random_state=42
-        )
-        
-        model.fit(X_train_scaled, y_train)
-        
-        # Acurácia
-        accuracy = model.score(X_test_scaled, y_test)
-        
-        return model, scaler, accuracy
-        
-    except Exception as e:
-        st.warning(f"⚠️ ML Training: {str(e)}")
-        return None, None, 0
-
-def predict_direction(df, model, scaler):
-    """Prediz direção do mercado"""
-    
-    if model is None or scaler is None or df is None or len(df) < 20:
-        return 0.5, "Neutro"
-    
-    try:
-        df_ml, feature_cols = prepare_ml_features(df)
-        
-        if len(df_ml) == 0:
-            return 0.5, "Neutro"
-        
-        X_last = df_ml[feature_cols].iloc[-1:].values
-        X_scaled = scaler.transform(X_last)
-        
-        proba = model.predict_proba(X_scaled)[0]
-        confidence = proba[1]  # Probabilidade de subida
-        
-        if confidence > 0.65:
-            direction = "Alta 🚀"
-        elif confidence < 0.35:
-            direction = "Baixa 📉"
-        else:
-            direction = "Neutro ⚖️"
-        
-        return confidence, direction
-        
-    except:
-        return 0.5, "Neutro"
-
-# ========================================
-# INTERFACE PRINCIPAL
+# MAIN APP
 # ========================================
 
 def main():
     
-    st.title("🚀 PROFITONE ULTIMATE V3")
-    st.markdown("### Sistema Completo de Trading com IA")
+    st.title("🚀 PROFITONE ULTRA V4 - MÁXIMO REALISMO")
+    st.markdown("### Sistema com Order Flow Real + Ensemble ML")
     
-    # ========================================
-    # SIDEBAR
-    # ========================================
-    
+    # Sidebar
     st.sidebar.title("⚙️ Configurações")
-    
-    st.sidebar.markdown("---")
     
     modo_map = {
         "🎯 Scalp (5 min)": 1,
@@ -656,140 +684,145 @@ def main():
     
     modo = modo_map[modo_selected]
     
-    # Timeframe baseado no modo
-    timeframe_map = {
-        1: "5m",
-        2: "15m",
-        3: "1h"
-    }
-    
+    timeframe_map = {1: "5m", 2: "15m", 3: "1h"}
     interval = timeframe_map[modo]
     
-    st.sidebar.markdown(f"**Timeframe:** `{interval}`")
-    
-    st.sidebar.markdown("---")
-    
-    # Refresh
     refresh_seconds = st.sidebar.slider(
         "🔄 Atualização (segundos)",
-        min_value=5,
-        max_value=60,
-        value=15,
-        step=5
+        5, 60, 15, 5
     )
     
-    st.sidebar.markdown("---")
-    
-    # Features disponíveis
-    st.sidebar.markdown("### 🎯 Features Ativas")
-    
-    st.sidebar.markdown(f"""
-    ✅ **Quantum Hunter V13**  
-    ✅ **TurboStoch WIN**  
-    ✅ **Machine Learning** {'🟢' if ML_AVAILABLE else '🔴'}  
-    ✅ **Scraper B3** {'🟢' if SCRAPER_AVAILABLE else '🔴'}  
-    """)
-    
-    # ========================================
-    # TABS PRINCIPAIS
-    # ========================================
-    
+    # Tabs
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 WIN Principal",
-        "🌐 Multi-Ativos",
-        "💪 Força Tempo Real",
-        "🤖 Machine Learning"
+        "📊 Análise Completa",
+        "🔬 Order Flow Real",
+        "🤖 Ensemble ML",
+        "📈 Performance"
     ])
     
-    # ========================================
-    # TAB 1: WIN PRINCIPAL
-    # ========================================
-    
+    # TAB 1: Análise Completa
     with tab1:
         
-        st.markdown("## 📊 IBOVESPA - Análise Completa")
+        st.markdown("## 📊 IBOVESPA - Análise Ultra-Avançada")
         
-        # Carregar dados
-        with st.spinner("📥 Carregando dados..."):
-            df = get_market_data("IBOV", interval)
+        df = get_market_data("IBOV", interval)
         
-        if df is not None and len(df) > 0:
+        if df is not None and len(df) > 30:
             
-            # Quantum Hunter
-            quantum_score, ml, mr, vwap_line = quantum_hunter_v13(df, modo)
+            # Quantum Hunter Ultra
+            quantum = quantum_hunter_v13_ultra(df, modo)
+            score = quantum['score']
+            confidence = quantum['confidence']
             
-            # TurboStoch
-            stc, fisher, hurst = turbo_stoch_win(df)
+            # Institutional Footprint
+            footprint = institutional_footprint(df)
             
-            # Força
-            forca = calcular_forca_win(df, modo)
-            
-            # Preço atual
+            # Preço
             preco_atual = df['close'].iloc[-1]
-            preco_anterior = df['close'].iloc[-2] if len(df) > 1 else preco_atual
+            preco_anterior = df['close'].iloc[-2]
             variacao = ((preco_atual - preco_anterior) / preco_anterior) * 100
             
             # Determinar sinal
-            if quantum_score > 60:
+            if score > 60 and confidence > 60:
                 sinal = "COMPRA"
                 sinal_class = "signal-compra"
                 sinal_icon = "🚀"
-                sinal_color = "#00ff88"
-            elif quantum_score < -60:
+                conf_class = "confidence-high"
+            elif score < -60 and confidence > 60:
                 sinal = "VENDA"
                 sinal_class = "signal-venda"
                 sinal_icon = "📉"
-                sinal_color = "#ff4444"
+                conf_class = "confidence-high"
             else:
                 sinal = "NEUTRO"
                 sinal_class = "signal-neutro"
                 sinal_icon = "⚖️"
-                sinal_color = "#ffd700"
+                conf_class = "confidence-medium" if confidence > 40 else "confidence-low"
             
-            # SIGNAL BOARD
+            # Track signal
+            track_signal(sinal, preco_atual, datetime.now())
+            
+            # SIGNAL BOARD COM CONFIDENCE
             st.markdown(f"""
             <div class="signal-board {sinal_class}">
                 <div style="font-size: 60px;">{sinal_icon}</div>
-                <div style="font-size: 40px; font-weight: bold; color: #000000; margin: 10px 0;">
+                <div style="font-size: 40px; font-weight: bold; margin: 10px 0;">
                     {sinal}
                 </div>
-                <div style="font-size: 24px; color: #000000;">
-                    Score: {quantum_score:.1f}
+                <div style="font-size: 24px;">
+                    Score: {score:.1f}
+                </div>
+                <div style="font-size: 20px; margin-top: 10px; color: {'#00ff88' if confidence > 70 else ('#ffd700' if confidence > 50 else '#ff4444')};">
+                    🎯 Confiança: {confidence:.1f}%
                 </div>
             </div>
             """, unsafe_allow_html=True)
             
-            # Métricas
+            # Métricas principais
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric(
-                    "💰 Preço",
-                    f"R$ {preco_atual:,.2f}",
-                    f"{variacao:+.2f}%"
-                )
+                st.markdown(f"""
+                <div class="metric-card {conf_class}">
+                    <div style="font-size: 14px; opacity: 0.8;">💰 Preço</div>
+                    <div style="font-size: 28px; font-weight: bold;">R$ {preco_atual:,.2f}</div>
+                    <div style="font-size: 18px; color: {'#00ff88' if variacao > 0 else '#ff4444'};">
+                        {variacao:+.2f}%
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col2:
-                regime = "Trending 📈" if hurst > 0.55 else ("Lateral ↔️" if hurst > 0.45 else "Reversal 🔄")
-                st.metric(
-                    "🎯 Regime",
-                    regime,
-                    f"Hurst: {hurst:.2f}"
-                )
+                st.markdown(f"""
+                <div class="metric-card {conf_class}">
+                    <div style="font-size: 14px; opacity: 0.8;">🎯 Confiança</div>
+                    <div style="font-size: 28px; font-weight: bold;">{confidence:.0f}%</div>
+                    <div style="font-size: 14px;">
+                        {'Alta ✅' if confidence > 70 else ('Média ⚠️' if confidence > 50 else 'Baixa ❌')}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col3:
-                st.metric(
-                    "⚡ STC",
-                    f"{stc:.1f}",
-                    f"Fisher: {fisher:.1f}"
-                )
+                hurst = hurst_exponent(df['close'].iloc[-30:], 20)
+                regime = "Trending" if hurst > 0.55 else ("Lateral" if hurst > 0.45 else "Reversal")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div style="font-size: 14px; opacity: 0.8;">📊 Regime</div>
+                    <div style="font-size: 20px; font-weight: bold;">{regime}</div>
+                    <div style="font-size: 14px;">Hurst: {hurst:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
             
             with col4:
-                st.metric(
-                    "💪 Força WIN",
-                    f"{forca:.0f}%",
-                    "Alta" if forca > 70 else ("Média" if forca > 40 else "Baixa")
-                )
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div style="font-size: 14px; opacity: 0.8;">📊 Volume</div>
+                    <div style="font-size: 20px; font-weight: bold;">
+                        {df['volume'].iloc[-1]/1e6:.1f}M
+                    </div>
+                    <div style="font-size: 14px;">
+                        Ratio: {(df['volume'].iloc[-1] / df['volume'].mean()):.2f}x
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Componentes do Score
+            st.markdown("### 🔍 Componentes do Quantum Score")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                tend = quantum['components']['tendencia']
+                st.metric("📈 Tendência", f"{tend:.1f}", f"Max: ±40")
+            
+            with col2:
+                vw = quantum['components']['vwap']
+                st.metric("💎 VWAP", f"{vw:.1f}", f"Max: ±30")
+            
+            with col3:
+                rs = quantum['components']['rsi']
+                st.metric("⚡ RSI", f"{rs:.1f}", f"Max: ±30")
             
             # Gráfico
             st.markdown("### 📈 Gráfico de Candlesticks")
@@ -801,7 +834,6 @@ def main():
                 row_heights=[0.7, 0.3]
             )
             
-            # Candlesticks
             fig.add_trace(
                 go.Candlestick(
                     x=df.index,
@@ -816,11 +848,10 @@ def main():
                 row=1, col=1
             )
             
-            # Médias
             fig.add_trace(
                 go.Scatter(
                     x=df.index,
-                    y=ml,
+                    y=quantum['media_lenta'],
                     name='Média Lenta',
                     line=dict(color='#ff00ff', width=2)
                 ),
@@ -830,25 +861,23 @@ def main():
             fig.add_trace(
                 go.Scatter(
                     x=df.index,
-                    y=mr,
+                    y=quantum['media_rapida'],
                     name='Média Rápida',
                     line=dict(color='#00d9ff', width=2)
                 ),
                 row=1, col=1
             )
             
-            # VWAP
             fig.add_trace(
                 go.Scatter(
                     x=df.index,
-                    y=vwap_line,
+                    y=quantum['vwap'],
                     name='VWAP',
                     line=dict(color='#ffd700', width=2, dash='dash')
                 ),
                 row=1, col=1
             )
             
-            # Volume
             colors = ['#00ff88' if df['close'].iloc[i] > df['open'].iloc[i] else '#ff4444' 
                      for i in range(len(df))]
             
@@ -857,8 +886,7 @@ def main():
                     x=df.index,
                     y=df['volume'],
                     name='Volume',
-                    marker_color=colors,
-                    showlegend=False
+                    marker_color=colors
                 ),
                 row=2, col=1
             )
@@ -867,231 +895,217 @@ def main():
                 template='plotly_dark',
                 height=700,
                 showlegend=True,
-                xaxis_rangeslider_visible=False,
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                )
+                xaxis_rangeslider_visible=False
             )
-            
-            fig.update_xaxes(title_text="Data/Hora", row=2, col=1)
-            fig.update_yaxes(title_text="Preço (R$)", row=1, col=1)
-            fig.update_yaxes(title_text="Volume", row=2, col=1)
             
             st.plotly_chart(fig, use_container_width=True)
-            
+        
         else:
-            st.error("❌ Não foi possível carregar os dados do IBOVESPA")
+            st.error("❌ Dados insuficientes")
     
-    # ========================================
-    # TAB 2: MULTI-ATIVOS
-    # ========================================
-    
+    # TAB 2: Order Flow Real
     with tab2:
         
-        st.markdown("## 🌐 Monitor Multi-Ativos")
+        st.markdown("## 🔬 Order Flow & Microestrutura")
         
-        ativos = ['IBOV', 'DOLAR', 'SP500', 'NASDAQ', 'DOW']
+        df_flow = get_market_data("IBOV", interval)
         
-        cols = st.columns(len(ativos))
-        
-        for idx, ativo in enumerate(ativos):
+        if df_flow is not None and len(df_flow) > 30:
             
-            with cols[idx]:
-                
-                df_ativo = get_market_data(ativo, interval)
-                
-                if df_ativo is not None and len(df_ativo) > 0:
-                    
-                    preco = df_ativo['close'].iloc[-1]
-                    preco_ant = df_ativo['close'].iloc[-2] if len(df_ativo) > 1 else preco
-                    var = ((preco - preco_ant) / preco_ant) * 100
-                    
-                    qscore, _, _, _ = quantum_hunter_v13(df_ativo, modo)
-                    forca_ativo = calcular_forca_win(df_ativo, modo)
-                    
-                    if qscore > 60:
-                        sig = "🚀 COMPRA"
-                        borda = "#00ff88"
-                    elif qscore < -60:
-                        sig = "📉 VENDA"
-                        borda = "#ff4444"
-                    else:
-                        sig = "⚖️ NEUTRO"
-                        borda = "#ffd700"
-                    
-                    st.markdown(f"""
-                    <div class="metric-card" style="border-left: 5px solid {borda};">
-                        <div class="metric-label">{ativo}</div>
-                        <div class="metric-value">
-                            {preco:,.2f}
-                        </div>
-                        <div style="color: {'#00ff88' if var > 0 else '#ff4444'}; font-size: 18px; font-weight: bold;">
-                            {var:+.2f}%
-                        </div>
-                        <div style="margin-top: 10px; font-size: 14px; color: #000000;">
-                            {sig}
-                        </div>
-                        <div style="font-size: 12px; color: #000000; margin-top: 5px;">
-                            Score: {qscore:.1f} | Força: {forca_ativo:.0f}%
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                else:
-                    st.error(f"❌ {ativo}")
-    
-    # ========================================
-    # TAB 3: FORÇA TEMPO REAL
-    # ========================================
-    
-    with tab3:
-        
-        st.markdown("## 💪 Força do WIN em Tempo Real")
-        
-        df_win = get_market_data("IBOV", interval)
-        
-        if df_win is not None and len(df_win) > 0:
+            footprint = institutional_footprint(df_flow)
             
-            forca_win = calcular_forca_win(df_win, modo)
+            st.markdown(f"""
+            <div style="background: rgba(255,255,255,0.95); padding: 20px; border-radius: 15px; margin: 20px 0;">
+                <h3 style="color: #000000;">📊 Participação Estimada no Mercado</h3>
+                <p style="color: #000000; font-size: 16px;">
+                    ⚠️ <strong>Confiança desta estimativa: {footprint['confidence']:.1f}%</strong>
+                </p>
+                <p style="color: #666; font-size: 14px;">
+                    Baseado em: VPIN, Detecção de Icebergs, Análise de Absorção e Smart Money Index
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Gauge
-            fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number+delta",
-                value=forca_win,
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': "Força WIN", 'font': {'size': 24, 'color': '#000000'}},
-                delta={'reference': 50, 'increasing': {'color': "#00ff88"}, 'decreasing': {'color': "#ff4444"}},
-                gauge={
-                    'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "#000000"},
-                    'bar': {'color': "#667eea"},
-                    'bgcolor': "white",
-                    'borderwidth': 2,
-                    'bordercolor': "#000000",
-                    'steps': [
-                        {'range': [0, 30], 'color': 'rgba(255,68,68,0.3)'},
-                        {'range': [30, 70], 'color': 'rgba(255,215,0,0.3)'},
-                        {'range': [70, 100], 'color': 'rgba(0,255,136,0.3)'}
-                    ],
-                    'threshold': {
-                        'line': {'color': "#000000", 'width': 4},
-                        'thickness': 0.75,
-                        'value': forca_win
-                    }
-                }
-            ))
-            
-            fig_gauge.update_layout(
-                paper_bgcolor='rgba(255,255,255,0.9)',
-                font={'color': "#000000", 'family': "Arial"},
-                height=400
-            )
-            
-            st.plotly_chart(fig_gauge, use_container_width=True)
-            
-            # Análise
             col1, col2, col3 = st.columns(3)
             
             with col1:
                 st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Força Atual</div>
-                    <div class="metric-value" style="color: {'#00ff88' if forca_win > 70 else ('#ffd700' if forca_win > 40 else '#ff4444')};">
-                        {forca_win:.1f}%
+                <div class="metric-card" style="border-left: 5px solid #667eea;">
+                    <div style="font-size: 14px; opacity: 0.8;">🏛️ Institucional</div>
+                    <div style="font-size: 32px; font-weight: bold; color: #667eea;">
+                        {footprint['institucional']:.1f}%
+                    </div>
+                    <div style="font-size: 12px; margin-top: 10px;">
+                        Fundos, Asset Managers
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
             
             with col2:
-                nivel = "ALTA 🚀" if forca_win > 70 else ("MÉDIA ⚖️" if forca_win > 40 else "BAIXA 📉")
                 st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Nível</div>
-                    <div class="metric-value" style="font-size: 24px;">
-                        {nivel}
+                <div class="metric-card" style="border-left: 5px solid #00d9ff;">
+                    <div style="font-size: 14px; opacity: 0.8;">🏦 Bancos</div>
+                    <div style="font-size: 32px; font-weight: bold; color: #00d9ff;">
+                        {footprint['bancos']:.1f}%
+                    </div>
+                    <div style="font-size: 12px; margin-top: 10px;">
+                        Market Makers, Prop Trading
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
             
             with col3:
-                _, _, hurst_win = turbo_stoch_win(df_win)
-                tendencia = "Trending" if hurst_win > 0.55 else ("Lateral" if hurst_win > 0.45 else "Reversal")
                 st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Tendência</div>
-                    <div class="metric-value" style="font-size: 24px;">
-                        {tendencia}
+                <div class="metric-card" style="border-left: 5px solid #ffd700;">
+                    <div style="font-size: 14px; opacity: 0.8;">👤 Varejo</div>
+                    <div style="font-size: 32px; font-weight: bold; color: #ffd700;">
+                        {footprint['varejo']:.1f}%
+                    </div>
+                    <div style="font-size: 12px; margin-top: 10px;">
+                        Pessoas Físicas, Day Traders
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
             
-        else:
-            st.error("❌ Não foi possível calcular a força")
-    
-    # ========================================
-    # TAB 4: MACHINE LEARNING
-    # ========================================
-    
-    with tab4:
+            # Pie chart
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=['Institucional', 'Bancos', 'Varejo'],
+                values=[footprint['institucional'], footprint['bancos'], footprint['varejo']],
+                marker=dict(colors=['#667eea', '#00d9ff', '#ffd700']),
+                hole=0.4,
+                textinfo='label+percent',
+                textfont=dict(size=16, color='#000000')
+            )])
+            
+            fig_pie.update_layout(
+                title="Distribuição de Participação",
+                title_font=dict(size=20, color='#000000'),
+                paper_bgcolor='rgba(255,255,255,0.9)',
+                height=400
+            )
+            
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+            # Métricas de microestrutura
+            st.markdown("### 📊 Métricas de Microestrutura")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "🎯 VPIN",
+                    f"{footprint['vpin']:.3f}",
+                    "Toxic Flow" if footprint['vpin'] > 0.5 else "Normal"
+                )
+            
+            with col2:
+                st.metric(
+                    "🧊 Iceberg",
+                    f"{footprint['iceberg']:.2f}",
+                    "Detectado" if abs(footprint['iceberg']) > 1 else "Normal"
+                )
+            
+            with col3:
+                st.metric(
+                    "🔄 Absorção",
+                    f"{footprint['absorption']:.2f}",
+                    "Alta" if abs(footprint['absorption']) > 0.5 else "Normal"
+                )
+            
+            with col4:
+                st.metric(
+                    "💰 SMI",
+                    f"{footprint['smi']:.1f}",
+                    "Bullish" if footprint['smi'] > 50 else "Bearish"
+                )
+            
+            # Explicações
+            with st.expander("ℹ️ Como interpretar estes dados"):
+                st.markdown("""
+                ### 📚 Guia de Interpretação
+                
+                **🎯 VPIN (Volume-Synchronized Probability of Informed Trading)**
+                - > 0.5: Alta probabilidade de traders informados (institucionais) ativos
+                - < 0.3: Fluxo normal de varejo
+                - Baseado em: Easley, López de Prado & O'Hara (2012)
+                
+                **🧊 Detecção de Icebergs**
+                - Score > 1.5: Possível ordem grande escondida
+                - Indica: Institucionais acumulando/distribuindo
+                
+                **🔄 Absorção de Liquidez**
+                - Positivo: Suporte forte (compradores absorvendo vendas)
+                - Negativo: Resistência forte (vendedores absorvendo compras)
+                
+                **💰 Smart Money Index**
+                - > 50: Dinheiro institucional entrando
+                - < 50: Dinheiro institucional saindo
+                
+                **⚠️ Importante:**
+                - Estas são ESTIMATIVAS baseadas em análise de volume e preço
+                - Margem de erro: ±10-15%
+                - Dados oficiais custam R$ 500-2.000/mês
+                - Use como confirmação, não como única fonte
+                """)
         
-        st.markdown("## 🤖 Previsão com Machine Learning")
+        else:
+            st.error("❌ Dados insuficientes")
+    
+    # TAB 3: Ensemble ML
+    with tab3:
+        
+        st.markdown("## 🤖 Ensemble Machine Learning")
         
         if not ML_AVAILABLE:
-            st.warning("⚠️ Bibliotecas de ML não instaladas. Instale com:")
-            st.code("pip install tensorflow xgboost")
+            st.warning("⚠️ Instale: pip install tensorflow xgboost lightgbm")
         else:
             
             df_ml = get_market_data("IBOV", "15m")
             
             if df_ml is not None and len(df_ml) > 100:
                 
-                with st.spinner("🧠 Treinando modelo..."):
-                    model, scaler, accuracy = train_ml_model(df_ml)
+                with st.spinner("🧠 Treinando ensemble (XGBoost + LightGBM + Random Forest)..."):
+                    models, scaler, metrics = train_ensemble_model(df_ml)
                 
-                if model is not None:
+                if models is not None:
                     
-                    st.success(f"✅ Modelo treinado com {accuracy*100:.1f}% de acurácia")
+                    st.success(f"✅ Ensemble treinado com {metrics['ensemble_acc']*100:.1f}% de acurácia média")
                     
-                    # Previsão
-                    confidence, direction = predict_direction(df_ml, model, scaler)
-                    
-                    col1, col2 = st.columns(2)
+                    # Individual accuracies
+                    col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <div class="metric-label">Previsão ML</div>
-                            <div class="metric-value" style="font-size: 32px;">
-                                {direction}
-                            </div>
-                            <div style="font-size: 18px; color: #000000; margin-top: 10px;">
-                                Confiança: {confidence*100:.1f}%
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("🟦 XGBoost", f"{metrics['xgb_acc']*100:.1f}%")
                     
                     with col2:
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <div class="metric-label">Acurácia do Modelo</div>
-                            <div class="metric-value" style="font-size: 32px;">
-                                {accuracy*100:.1f}%
-                            </div>
-                            <div style="font-size: 14px; color: #000000; margin-top: 10px;">
-                                Base: últimas {len(df_ml)} barras
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("🟩 LightGBM", f"{metrics['lgb_acc']*100:.1f}%")
                     
-                    # Gauge de confiança
-                    fig_conf = go.Figure(go.Indicator(
+                    with col3:
+                        st.metric("🟨 Random Forest", f"{metrics['rf_acc']*100:.1f}%")
+                    
+                    # Prediction
+                    proba, direction, confidence = ensemble_predict(df_ml, models, scaler)
+                    
+                    st.markdown(f"""
+                    <div class="signal-board {'signal-compra' if 'Alta' in direction else ('signal-venda' if 'Baixa' in direction else 'signal-neutro')}">
+                        <div style="font-size: 40px; font-weight: bold;">
+                            Previsão ML: {direction}
+                        </div>
+                        <div style="font-size: 24px; margin-top: 10px;">
+                            Probabilidade: {proba*100:.1f}%
+                        </div>
+                        <div style="font-size: 20px; margin-top: 10px; color: {'#00ff88' if confidence > 70 else ('#ffd700' if confidence > 50 else '#ff4444')};">
+                            🎯 Confiança (acordo entre modelos): {confidence:.1f}%
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Gauge
+                    fig_gauge = go.Figure(go.Indicator(
                         mode="gauge+number",
-                        value=confidence*100,
+                        value=proba*100,
                         domain={'x': [0, 1], 'y': [0, 1]},
-                        title={'text': "Confiança da Previsão", 'font': {'size': 24, 'color': '#000000'}},
+                        title={'text': "Probabilidade de Alta", 'font': {'size': 24, 'color': '#000000'}},
                         gauge={
                             'axis': {'range': [0, 100], 'tickcolor': "#000000"},
                             'bar': {'color': "#667eea"},
@@ -1099,100 +1113,136 @@ def main():
                             'borderwidth': 2,
                             'bordercolor': "#000000",
                             'steps': [
-                                {'range': [0, 35], 'color': 'rgba(255,68,68,0.3)'},
-                                {'range': [35, 65], 'color': 'rgba(255,215,0,0.3)'},
-                                {'range': [65, 100], 'color': 'rgba(0,255,136,0.3)'}
+                                {'range': [0, 40], 'color': 'rgba(255,68,68,0.3)'},
+                                {'range': [40, 60], 'color': 'rgba(255,215,0,0.3)'},
+                                {'range': [60, 100], 'color': 'rgba(0,255,136,0.3)'}
                             ]
                         }
                     ))
                     
-                    fig_conf.update_layout(
+                    fig_gauge.update_layout(
                         paper_bgcolor='rgba(255,255,255,0.9)',
                         font={'color': "#000000"},
                         height=400
                     )
                     
-                    st.plotly_chart(fig_conf, use_container_width=True)
+                    st.plotly_chart(fig_gauge, use_container_width=True)
                     
-                    # Informações
-                    st.info("""
-                    **ℹ️ Como funciona:**
-                    
-                    - O modelo XGBoost analisa padrões históricos de preço, volume, RSI, MACD e outros indicadores
-                    - Confiança > 65%: Sinal forte
-                    - Confiança 35-65%: Sinal neutro
-                    - Confiança < 35%: Sinal fraco
-                    - O modelo é retreinado automaticamente com novos dados
-                    """)
+                    with st.expander("ℹ️ Como funciona o Ensemble"):
+                        st.markdown("""
+                        ### 🧠 Ensemble Learning
+                        
+                        **O que é:**
+                        - Combina 3 modelos diferentes de Machine Learning
+                        - Cada modelo "vota" na previsão
+                        - Resultado final = média das previsões
+                        
+                        **Por que é melhor:**
+                        - ✅ Reduz overfitting
+                        - ✅ Mais robusto a ruído
+                        - ✅ Melhor generalização
+                        
+                        **Features usadas:**
+                        - Returns, Volatilidade, RSI, MACD
+                        - Volume Ratio, Bollinger Bands
+                        - VPIN, Order Flow, Cumulative Delta
+                        
+                        **Confiança:**
+                        - Alta (>70%): Modelos concordam fortemente
+                        - Média (50-70%): Modelos têm alguma divergência
+                        - Baixa (<50%): Modelos discordam
+                        
+                        **⚠️ Limitações:**
+                        - Não prevê eventos extremos (cisnes negros)
+                        - Funciona melhor em tendências
+                        - Retreina a cada sessão (sem memória de longo prazo)
+                        """)
                 
                 else:
-                    st.error("❌ Falha ao treinar modelo ML")
+                    st.error("❌ Falha no treinamento")
             
             else:
-                st.warning("⚠️ Dados insuficientes para treinar ML (mínimo 100 barras)")
+                st.warning("⚠️ Dados insuficientes (mínimo 100 barras)")
+    
+    # TAB 4: Performance
+    with tab4:
         
-        # Scraper B3
-        st.markdown("---")
-        st.markdown("### 🌐 Dados Públicos B3")
+        st.markdown("## 📈 Performance Histórica do Sistema")
         
-        if SCRAPER_AVAILABLE:
+        perf = calculate_performance()
+        
+        if perf is not None:
             
-            with st.spinner("🔍 Buscando dados públicos..."):
-                flow_data = scrape_b3_institutional_flow()
+            col1, col2, col3 = st.columns(3)
             
-            if flow_data:
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown(f"""
-                    <div class="metric-card" style="border-left: 5px solid #667eea;">
-                        <div class="metric-label">🏛️ Institucional</div>
-                        <div class="metric-value">{flow_data['institucional']:.1f}%</div>
+            with col1:
+                st.metric(
+                    "📊 Total de Sinais",
+                    perf['total_signals']
+                )
+            
+            with col2:
+                st.metric(
+                    "✅ Sinais Corretos",
+                    perf['correct']
+                )
+            
+            with col3:
+                acc_color = "#00ff88" if perf['accuracy'] > 70 else ("#ffd700" if perf['accuracy'] > 50 else "#ff4444")
+                st.markdown(f"""
+                <div class="metric-card" style="border-left: 5px solid {acc_color};">
+                    <div style="font-size: 14px; opacity: 0.8;">🎯 Acurácia</div>
+                    <div style="font-size: 32px; font-weight: bold; color: {acc_color};">
+                        {perf['accuracy']:.1f}%
                     </div>
-                    """, unsafe_allow_html=True)
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Histórico de sinais
+            if len(st.session_state.signal_history) > 0:
                 
-                with col2:
-                    st.markdown(f"""
-                    <div class="metric-card" style="border-left: 5px solid #00d9ff;">
-                        <div class="metric-label">🏦 Bancos</div>
-                        <div class="metric-value">{flow_data['bancos']:.1f}%</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                st.markdown("### 📋 Últimos Sinais")
                 
-                with col3:
-                    st.markdown(f"""
-                    <div class="metric-card" style="border-left: 5px solid #ffd700;">
-                        <div class="metric-label">👤 Varejo</div>
-                        <div class="metric-value">{flow_data['varejo']:.1f}%</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                history_df = pd.DataFrame(list(st.session_state.signal_history))
+                history_df = history_df.sort_values('timestamp', ascending=False).head(20)
                 
-                st.caption(f"🕐 Atualizado: {flow_data['timestamp'].strftime('%H:%M:%S')}")
-                
-            else:
-                st.warning("⚠️ Não foi possível obter dados de fluxo institucional")
+                st.dataframe(
+                    history_df.style.applymap(
+                        lambda x: 'background-color: rgba(0,255,136,0.2)' if x == 'COMPRA' else (
+                            'background-color: rgba(255,68,68,0.2)' if x == 'VENDA' else ''
+                        ),
+                        subset=['signal']
+                    ),
+                    use_container_width=True
+                )
         
         else:
-            st.warning("⚠️ BeautifulSoup não instalado. Instale com:")
-            st.code("pip install beautifulsoup4 lxml")
+            st.info("ℹ️ Aguardando acumular histórico de sinais...")
+        
+        st.markdown("""
+        ---
+        ### 📚 Disclaimer de Performance
+        
+        ⚠️ **Importante:**
+        - A acurácia mostrada é baseada em sinais passados
+        - Performance passada NÃO garante resultados futuros
+        - Este é um sistema de APOIO à decisão, não substituição
+        - SEMPRE use stop-loss e gestão de risco
+        - Não opere com dinheiro que não pode perder
+        """)
     
-    # ========================================
-    # FOOTER
-    # ========================================
-    
+    # Footer
     st.markdown("---")
-    
     st.markdown(f"""
     <div style="text-align: center; color: #000000; padding: 20px;">
         <p style="font-size: 16px; font-weight: bold;">
-            🚀 ProfitOne Ultimate V3 | Machine Learning + Scraper B3 + Quantum Hunter
+            🚀 ProfitOne Ultra V4 | Order Flow Real + Ensemble ML + Performance Tracking
         </p>
         <p style="font-size: 12px;">
-            ⚠️ Este sistema é para fins educacionais. Trading envolve risco de perda de capital.
+            ⚠️ Sistema educacional. Trading envolve risco de perda de capital.
         </p>
         <p style="font-size: 12px;">
-            🕐 Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+            🕐 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1200,10 +1250,6 @@ def main():
     # Auto-refresh
     time.sleep(refresh_seconds)
     st.rerun()
-
-# ========================================
-# EXECUÇÃO
-# ========================================
 
 if __name__ == "__main__":
     main()
