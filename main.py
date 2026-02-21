@@ -1,297 +1,725 @@
 """
-MÓDULO 4: FLUXO & MICROESTRUTURA
-Tracking institucional e detecção de trapped traders
+ProfitOne Quantum V8 - Sistema de Monitoramento Avançado
+Sistema completo de análise técnica com indicadores de ponta
 """
 
+import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime
+import warnings
 
+warnings.filterwarnings('ignore')
 
-def vpin_wick_analysis(df: pd.DataFrame, vpin_window: int = 50) -> dict:
-    """
-    VPIN + Análise de Wicks (sombras de candles)
-    Wicks grandes = rejeição de preço = possível reversão
-    
-    Returns:
-        dict com 'signal', 'vpin', 'upper_wick_ratio', 'lower_wick_ratio', 'score'
-    """
-    open_price = df['open']
-    high = df['high']
-    low = df['low']
-    close = df['close']
-    volume = df['volume']
-    
-    # VPIN (simplificado)
-    price_change = close.diff()
-    buy_volume = volume.where(price_change > 0, 0)
-    sell_volume = volume.where(price_change < 0, 0)
-    
-    volume_imbalance = np.abs(buy_volume - sell_volume)
-    total_volume = volume
-    
-    vpin = (volume_imbalance.rolling(window=vpin_window).sum() / 
-            total_volume.rolling(window=vpin_window).sum())
-    
-    current_vpin = vpin.iloc[-1]
-    
-    # Análise de Wicks
-    body = np.abs(close - open_price)
-    upper_wick = high - np.maximum(open_price, close)
-    lower_wick = np.minimum(open_price, close) - low
-    total_range = high - low
-    
-    # Ratios
-    upper_wick_ratio = upper_wick / (total_range + 1e-10)
-    lower_wick_ratio = lower_wick / (total_range + 1e-10)
-    
-    current_upper_wick_ratio = upper_wick_ratio.iloc[-1]
-    current_lower_wick_ratio = lower_wick_ratio.iloc[-1]
-    
-    # Sinal combinado
-    # Wick superior grande = rejeição de alta = bearish
-    # Wick inferior grande = rejeição de baixa = bullish
-    
-    significant_upper_wick = current_upper_wick_ratio > 0.5
-    significant_lower_wick = current_lower_wick_ratio > 0.5
-    
-    if significant_lower_wick and current_vpin < 0.5:
-        signal = 'BUY'
-        score = 65
-    elif significant_upper_wick and current_vpin < 0.5:
-        signal = 'SELL'
-        score = -65
-    elif current_vpin > 0.6:
-        signal = 'NEUTRAL'
-        score = 0
-    else:
-        signal = 'NEUTRAL'
-        score = (current_lower_wick_ratio - current_upper_wick_ratio) * 50
-    
-    return {
-        'signal': signal,
-        'vpin': current_vpin,
-        'upper_wick_ratio': current_upper_wick_ratio,
-        'lower_wick_ratio': current_lower_wick_ratio,
-        'score': np.clip(score, -100, 100)
+# Imports dos módulos
+from modules.utils import (
+    get_market_data, 
+    AntiRepaintEngine, 
+    format_signal_badge,
+    calculate_ema,
+    calculate_rsi
+)
+from modules.kinematics import (
+    tema_velocity_signal,
+    tema_entropy_signal,
+    kalman_zscore_signal,
+    jma_vortex_signal
+)
+from modules.thermodynamics import (
+    entropy_bollinger_keltner_signal,
+    vortex_adx_signal,
+    reynolds_fvg_signal
+)
+from modules.statistics import (
+    fisher_hurst_signal,
+    zscore_vpin_signal,
+    linear_regression_signal
+)
+from modules.microstructure import (
+    vpin_wick_analysis,
+    trapped_traders_signal,
+    fvg_fibonacci_signal,
+    synthetic_delta_signal
+)
+from modules.chaos import (
+    hurst_bollinger_signal,
+    laguerre_rsi_signal,
+    cog_kalman_signal,
+    vscore_vwap_signal
+)
+import config
+
+# ============================================================================
+# CONFIGURAÇÃO DA PÁGINA
+# ============================================================================
+
+st.set_page_config(
+    page_title="ProfitOne Quantum V8",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ============================================================================
+# CSS CUSTOMIZADO
+# ============================================================================
+
+st.markdown("""
+<style>
+    /* Fundo escuro gradiente */
+    .stApp {
+        background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
     }
-
-
-def trapped_traders_signal(df: pd.DataFrame, lookback: int = 20) -> dict:
-    """
-    Detecta Trapped Traders (traders presos em posições perdedoras)
     
-    Lógica:
-    - Breakout falso seguido de reversão rápida = traders presos
-    - Volume alto no breakout + reversão = ainda mais traders presos
-    
-    Returns:
-        dict com 'signal', 'trapped_long', 'trapped_short', 'trap_strength', 'score'
-    """
-    high = df['high']
-    low = df['low']
-    close = df['close']
-    volume = df['volume']
-    
-    # Identificar máximas e mínimas locais
-    recent_high = high.rolling(window=lookback).max()
-    recent_low = low.rolling(window=lookback).min()
-    
-    current_close = close.iloc[-1]
-    current_high = high.iloc[-1]
-    current_low = low.iloc[-1]
-    current_volume = volume.iloc[-1]
-    
-    prev_recent_high = recent_high.iloc[-2]
-    prev_recent_low = recent_low.iloc[-2]
-    
-    avg_volume = volume.rolling(window=lookback).mean().iloc[-1]
-    
-    # Detectar breakout
-    breakout_up = current_high > prev_recent_high
-    breakout_down = current_low < prev_recent_low
-    
-    # Detectar reversão (preço fecha do outro lado)
-    # Breakout up mas fecha abaixo da máxima anterior = long traders trapped
-    trapped_long = breakout_up and (current_close < prev_recent_high)
-    
-    # Breakout down mas fecha acima da mínima anterior = short traders trapped
-    trapped_short = breakout_down and (current_close > prev_recent_low)
-    
-    # Força da armadilha baseada em volume
-    volume_ratio = current_volume / (avg_volume + 1e-10)
-    trap_strength = min(volume_ratio, 3.0)  # Cap at 3x
-    
-    # Sinal
-    if trapped_short:
-        # Shorts presos = squeeze up iminente
-        signal = 'BUY'
-        score = 50 * trap_strength
-    elif trapped_long:
-        # Longs presos = dump down iminente
-        signal = 'SELL'
-        score = -50 * trap_strength
-    else:
-        signal = 'NEUTRAL'
-        score = 0
-    
-    return {
-        'signal': signal,
-        'trapped_long': trapped_long,
-        'trapped_short': trapped_short,
-        'trap_strength': trap_strength,
-        'score': np.clip(score, -100, 100)
+    /* Títulos */
+    h1, h2, h3 {
+        color: #00ff88 !important;
+        text-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
     }
+    
+    /* Métricas */
+    [data-testid="stMetricValue"] {
+        font-size: 28px !important;
+        font-weight: bold !important;
+    }
+    
+    /* Cards */
+    .css-1r6slb0 {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+        padding: 20px;
+        backdrop-filter: blur(10px);
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f1419 0%, #1a1f2e 100%);
+    }
+    
+    /* Botões */
+    .stButton > button {
+        background: linear-gradient(90deg, #00ff88 0%, #00cc6a 100%);
+        color: black;
+        font-weight: bold;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 24px;
+        transition: all 0.3s;
+    }
+    
+    .stButton > button:hover {
+        transform: scale(1.05);
+        box-shadow: 0 0 20px rgba(0, 255, 136, 0.6);
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+        padding: 10px 20px;
+        color: #00ff88;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(90deg, #00ff88 0%, #00cc6a 100%);
+        color: black !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================================
+# FUNÇÕES AUXILIARES
+# ============================================================================
+
+@st.cache_data(ttl=60)
+def fetch_data(symbol: str, period: str, interval: str):
+    """Busca dados com cache"""
+    return get_market_data(symbol, period, interval)
 
 
-def fvg_fibonacci_signal(df: pd.DataFrame, fvg_min_gap: float = 0.002) -> dict:
+def calculate_master_score(signals: dict) -> tuple:
     """
-    Fair Value Gaps + Fibonacci 61.8%
-    
-    FVG com retração de 61.8% = zona de alta probabilidade
-    
-    Returns:
-        dict com 'signal', 'fvg_detected', 'fvg_type', 'fib_level', 'score'
+    Calcula score mestre a partir de todos os sinais
+    Returns: (master_score, master_signal, signal_breakdown)
     """
-    high = df['high']
-    low = df['low']
-    close = df['close']
+    scores = []
+    weights = {
+        'kinematics': 1.2,      # Alta importância para momentum
+        'thermodynamics': 1.0,  # Média importância para regime
+        'statistics': 1.1,      # Alta importância para probabilidade
+        'microstructure': 1.3,  # Muito alta para institutional flow
+        'chaos': 0.9            # Menor peso para indicadores complexos
+    }
     
-    # Detectar FVG
-    # Bullish FVG: low[i] > high[i-2]
-    # Bearish FVG: high[i] < low[i-2]
+    signal_breakdown = {}
     
-    bullish_fvg = low.iloc[-1] > high.iloc[-3]
-    bearish_fvg = high.iloc[-1] < low.iloc[-3]
+    for category, category_signals in signals.items():
+        category_weight = weights.get(category, 1.0)
+        
+        for signal_name, signal_data in category_signals.items():
+            if 'score' in signal_data:
+                weighted_score = signal_data['score'] * category_weight
+                scores.append(weighted_score)
+                signal_breakdown[signal_name] = {
+                    'score': signal_data['score'],
+                    'weighted_score': weighted_score,
+                    'signal': signal_data.get('signal', 'NEUTRAL')
+                }
     
-    fvg_detected = bullish_fvg or bearish_fvg
+    if scores:
+        master_score = np.mean(scores)
+    else:
+        master_score = 0
     
-    if bullish_fvg:
-        fvg_type = 'BULLISH'
-        gap_top = low.iloc[-1]
-        gap_bottom = high.iloc[-3]
-        gap_size = (gap_top - gap_bottom) / close.iloc[-1]
+    # Determinar sinal mestre
+    if master_score > 30:
+        master_signal = 'BUY'
+    elif master_score < -30:
+        master_signal = 'SELL'
+    else:
+        master_signal = 'NEUTRAL'
+    
+    return master_score, master_signal, signal_breakdown
+
+
+def create_main_chart(df: pd.DataFrame, signals: dict, master_score: float):
+    """Cria gráfico principal com candlesticks e indicadores"""
+    
+    # Criar subplots
+    fig = make_subplots(
+        rows=4, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.5, 0.15, 0.2, 0.15],
+        subplot_titles=('Preço & Indicadores', 'Master Score', 'RSI & Fisher', 'VPIN & Volume')
+    )
+    
+    # ========== ROW 1: CANDLESTICK ==========
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='Preço',
+            increasing_line_color='#00ff88',
+            decreasing_line_color='#ff4444'
+        ),
+        row=1, col=1
+    )
+    
+    # EMAs
+    ema9 = calculate_ema(df['close'], 9)
+    ema21 = calculate_ema(df['close'], 21)
+    ema50 = calculate_ema(df['close'], 50)
+    
+    fig.add_trace(go.Scatter(x=df.index, y=ema9, name='EMA 9', line=dict(color='cyan', width=1)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=ema21, name='EMA 21', line=dict(color='orange', width=1)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=ema50, name='EMA 50', line=dict(color='purple', width=2)), row=1, col=1)
+    
+    # VWAP
+    if 'vscore_vwap' in signals['chaos']:
+        vwap_data = signals['chaos']['vscore_vwap']
+        # Recalcular VWAP para plotar
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        cumulative_tpv = (typical_price * df['volume']).rolling(window=20).sum()
+        cumulative_volume = df['volume'].rolling(window=20).sum()
+        vwap = cumulative_tpv / (cumulative_volume + 1e-10)
         
-        # Fibonacci 61.8% do gap
-        fib_618 = gap_bottom + (gap_top - gap_bottom) * 0.618
+        fig.add_trace(go.Scatter(x=df.index, y=vwap, name='VWAP', line=dict(color='yellow', width=2, dash='dot')), row=1, col=1)
+    
+    # ========== ROW 2: MASTER SCORE ==========
+    master_score_series = pd.Series([master_score] * len(df), index=df.index)
+    
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=master_score_series,
+            name='Master Score',
+            line=dict(color='#00ff88' if master_score > 0 else '#ff4444', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(0, 255, 136, 0.2)' if master_score > 0 else 'rgba(255, 68, 68, 0.2)'
+        ),
+        row=2, col=1
+    )
+    
+    # Linhas de referência
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    fig.add_hline(y=-30, line_dash="dash", line_color="red", row=2, col=1)
+    fig.add_hline(y=0, line_dash="solid", line_color="gray", row=2, col=1)
+    
+    # ========== ROW 3: RSI & FISHER ==========
+    rsi = calculate_rsi(df['close'], 14)
+    fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='purple', width=2)), row=3, col=1)
+    
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    
+    # ========== ROW 4: VOLUME ==========
+    colors = ['#00ff88' if df['close'].iloc[i] >= df['open'].iloc[i] else '#ff4444' for i in range(len(df))]
+    
+    fig.add_trace(
+        go.Bar(
+            x=df.index,
+            y=df['volume'],
+            name='Volume',
+            marker_color=colors,
+            opacity=0.7
+        ),
+        row=4, col=1
+    )
+    
+    # ========== LAYOUT ==========
+    fig.update_layout(
+        height=config.CHART_HEIGHT,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0.3)'
+    )
+    
+    # Remover labels duplicados dos eixos x
+    fig.update_xaxes(title_text="", row=1, col=1)
+    fig.update_xaxes(title_text="", row=2, col=1)
+    fig.update_xaxes(title_text="", row=3, col=1)
+    fig.update_xaxes(title_text="Data/Hora", row=4, col=1)
+    
+    fig.update_yaxes(title_text="Preço", row=1, col=1)
+    fig.update_yaxes(title_text="Score", row=2, col=1)
+    fig.update_yaxes(title_text="RSI", row=3, col=1)
+    fig.update_yaxes(title_text="Volume", row=4, col=1)
+    
+    return fig
+
+
+# ============================================================================
+# APLICAÇÃO PRINCIPAL
+# ============================================================================
+
+def main():
+    # ========== HEADER ==========
+    st.markdown("""
+    <div style='text-align: center; padding: 20px;'>
+        <h1>🚀 PROFITONE QUANTUM V8 🚀</h1>
+        <p style='font-size: 18px; color: #00ff88;'>Sistema Avançado de Monitoramento Multi-Indicador</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ========== SIDEBAR ==========
+    with st.sidebar:
+        st.markdown("## ⚙️ Configurações")
         
-        current_price = close.iloc[-1]
+        # Símbolo
+        symbol = st.text_input("📈 Símbolo", value=config.DEFAULT_SYMBOL)
         
-        # Se preço está próximo do fib 61.8% = zona de compra
-        price_near_fib = np.abs(current_price - fib_618) / current_price < 0.01  # 1% de tolerância
+        # Timeframe
+        selected_timeframe = st.selectbox(
+            "⏱️ Timeframe",
+            list(config.TIMEFRAMES.keys()),
+            index=1
+        )
+        interval = config.TIMEFRAMES[selected_timeframe]
         
-        if gap_size > fvg_min_gap and price_near_fib:
-            signal = 'BUY'
-            score = 75
-        elif gap_size > fvg_min_gap:
-            signal = 'BUY'
-            score = 50
+        # Período
+        period_options = {
+            "1 dia": "1d",
+            "5 dias": "5d",
+            "1 mês": "1mo",
+            "3 meses": "3mo",
+            "6 meses": "6mo"
+        }
+        selected_period = st.selectbox("📅 Período", list(period_options.keys()), index=1)
+        period = period_options[selected_period]
+        
+        # Anti-repaint
+        st.markdown("### 🔒 Anti-Repaint")
+        confirmation_bars = st.slider("Barras de Confirmação", 1, 10, config.MIN_CONFIRMATION_BARS)
+        
+        # Botões
+        col1, col2 = st.columns(2)
+        with col1:
+            refresh_btn = st.button("🔄 Atualizar", use_container_width=True)
+        with col2:
+            if st.button("🗑️ Limpar Cache", use_container_width=True):
+                st.cache_data.clear()
+                st.success("Cache limpo!")
+        
+        # Legenda
+        st.markdown("---")
+        st.markdown("### 📊 Módulos Ativos")
+        st.markdown("""
+        - 🎯 **Cinemática**: TEMA, Kalman, JMA, Vortex
+        - 🌡️ **Termodinâmica**: Entropy, ADX, Reynolds, FVG
+        - 📈 **Estatística**: Fisher, Hurst, Z-Score, VPIN
+        - 🔬 **Microestrutura**: Wicks, Trapped Traders, Delta
+        - 🌀 **Caos**: Laguerre, COG, V-Score
+        """)
+    
+    # ========== DADOS ==========
+    with st.spinner("🔄 Carregando dados..."):
+        df = fetch_data(symbol, period, interval)
+    
+    if df.empty:
+        st.error("❌ Erro ao carregar dados. Verifique o símbolo e tente novamente.")
+        return
+    
+    # Garantir que o índice seja datetime
+    if 'datetime' in df.columns:
+        df = df.set_index('datetime')
+    elif 'timestamp' in df.columns:
+        df = df.set_index('timestamp')
+    
+    # ========== CÁLCULO DE SINAIS ==========
+    with st.spinner("🧮 Calculando indicadores..."):
+        signals = {
+            'kinematics': {},
+            'thermodynamics': {},
+            'statistics': {},
+            'microstructure': {},
+            'chaos': {}
+        }
+        
+        try:
+            # Cinemática
+            signals['kinematics']['tema_velocity'] = tema_velocity_signal(df)
+            signals['kinematics']['tema_entropy'] = tema_entropy_signal(df)
+            signals['kinematics']['kalman_zscore'] = kalman_zscore_signal(df)
+            signals['kinematics']['jma_vortex'] = jma_vortex_signal(df)
+            
+            # Termodinâmica
+            signals['thermodynamics']['entropy_bb_kc'] = entropy_bollinger_keltner_signal(df)
+            signals['thermodynamics']['vortex_adx'] = vortex_adx_signal(df)
+            signals['thermodynamics']['reynolds_fvg'] = reynolds_fvg_signal(df)
+            
+            # Estatística
+            signals['statistics']['fisher_hurst'] = fisher_hurst_signal(df)
+            signals['statistics']['zscore_vpin'] = zscore_vpin_signal(df)
+            signals['statistics']['linear_regression'] = linear_regression_signal(df)
+            
+            # Microestrutura
+            signals['microstructure']['vpin_wick'] = vpin_wick_analysis(df)
+            signals['microstructure']['trapped_traders'] = trapped_traders_signal(df)
+            signals['microstructure']['fvg_fibonacci'] = fvg_fibonacci_signal(df)
+            signals['microstructure']['synthetic_delta'] = synthetic_delta_signal(df)
+            
+            # Caos
+            signals['chaos']['hurst_bollinger'] = hurst_bollinger_signal(df)
+            signals['chaos']['laguerre_rsi'] = laguerre_rsi_signal(df)
+            signals['chaos']['cog_kalman'] = cog_kalman_signal(df)
+            signals['chaos']['vscore_vwap'] = vscore_vwap_signal(df)
+            
+        except Exception as e:
+            st.error(f"❌ Erro ao calcular indicadores: {e}")
+            return
+    
+    # ========== MASTER SCORE ==========
+    master_score, master_signal, signal_breakdown = calculate_master_score(signals)
+    
+    # ========== ANTI-REPAINT ==========
+    if 'anti_repaint' not in st.session_state:
+        st.session_state.anti_repaint = AntiRepaintEngine(confirmation_bars)
+    
+    # Adicionar sinal atual
+    current_price = df['close'].iloc[-1]
+    current_timestamp = df.index[-1]
+    
+    st.session_state.anti_repaint.add_signal(
+        master_signal,
+        current_price,
+        current_timestamp,
+        master_score
+    )
+    
+    st.session_state.anti_repaint.update()
+    confirmed_signals = st.session_state.anti_repaint.get_confirmed_signals(config.MAX_SIGNALS_DISPLAY)
+    
+    # ========== MÉTRICAS PRINCIPAIS ==========
+    st.markdown("---")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        score_color = "normal" if -30 <= master_score <= 30 else ("off" if master_score < -30 else "normal")
+        st.metric(
+            "🎯 Master Score",
+            f"{master_score:.1f}",
+            delta=f"{master_score:.1f}",
+            delta_color=score_color
+        )
+    
+    with col2:
+        rsi_current = calculate_rsi(df['close'], 14).iloc[-1]
+        st.metric("📊 RSI (14)", f"{rsi_current:.1f}")
+    
+    with col3:
+        st.metric("💰 Preço Atual", f"R$ {current_price:.2f}")
+    
+    with col4:
+        st.markdown(f"### 🎪 Sinal: {format_signal_badge(master_signal)}", unsafe_allow_html=True)
+    
+    # ========== GRÁFICO PRINCIPAL ==========
+    st.markdown("---")
+    st.markdown("## 📈 Gráfico de Análise")
+    
+    fig = create_main_chart(df, signals, master_score)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # ========== TABS DE ANÁLISE ==========
+    st.markdown("---")
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🎯 Cinemática",
+        "🌡️ Termodinâmica",
+        "📈 Estatística",
+        "🔬 Microestrutura",
+        "🌀 Caos",
+        "🔒 Sinais Confirmados"
+    ])
+    
+    # TAB 1: Cinemática
+    with tab1:
+        st.markdown("### 🎯 Módulo de Cinemática & Velocidade")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### TEMA + Velocity")
+            tv = signals['kinematics']['tema_velocity']
+            st.write(f"**Sinal:** {tv['signal']}")
+            st.write(f"**Score:** {tv['score']:.1f}")
+            st.write(f"**TEMA:** {tv['tema']:.2f}")
+            st.write(f"**Velocity:** {tv['velocity']:.4f}")
+            
+            st.markdown("#### Kalman + Z-Score")
+            kz = signals['kinematics']['kalman_zscore']
+            st.write(f"**Sinal:** {kz['signal']}")
+            st.write(f"**Score:** {kz['score']:.1f}")
+            st.write(f"**Fair Price:** {kz['fair_price']:.2f}")
+            st.write(f"**Z-Score:** {kz['zscore']:.2f}")
+        
+        with col2:
+            st.markdown("#### TEMA + Entropy")
+            te = signals['kinematics']['tema_entropy']
+            st.write(f"**Sinal:** {te['signal']}")
+            st.write(f"**Score:** {te['score']:.1f}")
+            st.write(f"**Regime:** {te['regime']}")
+            st.write(f"**Entropy:** {te['entropy']:.3f}")
+            
+            st.markdown("#### JMA + Vortex")
+            jv = signals['kinematics']['jma_vortex']
+            st.write(f"**Sinal:** {jv['signal']}")
+            st.write(f"**Score:** {jv['score']:.1f}")
+            st.write(f"**VI+:** {jv['vi_plus']:.3f}")
+            st.write(f"**VI-:** {jv['vi_minus']:.3f}")
+    
+    # TAB 2: Termodinâmica
+    with tab2:
+        st.markdown("### 🌡️ Módulo de Física & Termodinâmica")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Entropy + BB/KC")
+            ebk = signals['thermodynamics']['entropy_bb_kc']
+            st.write(f"**Sinal:** {ebk['signal']}")
+            st.write(f"**Score:** {ebk['score']:.1f}")
+            st.write(f"**Entropy:** {ebk['entropy']:.3f}")
+            st.write(f"**Squeeze:** {'Sim' if ebk['squeeze'] else 'Não'}")
+            st.write(f"**Breakout:** {ebk['breakout_direction']}")
+            
+            st.markdown("#### Reynolds + FVG")
+            rf = signals['thermodynamics']['reynolds_fvg']
+            st.write(f"**Sinal:** {rf['signal']}")
+            st.write(f"**Score:** {rf['score']:.1f}")
+            st.write(f"**Reynolds:** {rf['reynolds']:.1f}")
+            st.write(f"**Fluxo:** {rf['flow_regime']}")
+            st.write(f"**FVG:** {'Sim' if rf['fvg_detected'] else 'Não'}")
+        
+        with col2:
+            st.markdown("#### Vortex + ADX")
+            va = signals['thermodynamics']['vortex_adx']
+            st.write(f"**Sinal:** {va['signal']}")
+            st.write(f"**Score:** {va['score']:.1f}")
+            st.write(f"**ADX:** {va['adx']:.1f}")
+            st.write(f"**VI+:** {va['vi_plus']:.3f}")
+            st.write(f"**VI-:** {va['vi_minus']:.3f}")
+    
+    # TAB 3: Estatística
+    with tab3:
+        st.markdown("### 📈 Módulo de Estatística & Probabilidade")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Fisher + Hurst")
+            fh = signals['statistics']['fisher_hurst']
+            st.write(f"**Sinal:** {fh['signal']}")
+            st.write(f"**Score:** {fh['score']:.1f}")
+            st.write(f"**Fisher:** {fh['fisher']:.3f}")
+            st.write(f"**Hurst:** {fh['hurst']:.3f}")
+            st.write(f"**Tipo de Mercado:** {fh['market_type']}")
+            
+            st.markdown("#### Regressão Linear")
+            lr = signals['statistics']['linear_regression']
+            st.write(f"**Sinal:** {lr['signal']}")
+            st.write(f"**Score:** {lr['score']:.1f}")
+            st.write(f"**R²:** {lr['r_squared']:.3f}")
+            st.write(f"**Slope:** {lr['slope']:.4f}")
+        
+        with col2:
+            st.markdown("#### Z-Score + VPIN")
+            zv = signals['statistics']['zscore_vpin']
+            st.write(f"**Sinal:** {zv['signal']}")
+            st.write(f"**Score:** {zv['score']:.1f}")
+            st.write(f"**Z-Score:** {zv['zscore']:.2f}")
+            st.write(f"**VPIN:** {zv['vpin']:.3f}")
+            st.write(f"**Anomalia:** {'Sim' if zv['anomaly_detected'] else 'Não'}")
+    
+    # TAB 4: Microestrutura
+    with tab4:
+        st.markdown("### 🔬 Módulo de Fluxo & Microestrutura")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### VPIN + Wicks")
+            vw = signals['microstructure']['vpin_wick']
+            st.write(f"**Sinal:** {vw['signal']}")
+            st.write(f"**Score:** {vw['score']:.1f}")
+            st.write(f"**VPIN:** {vw['vpin']:.3f}")
+            st.write(f"**Upper Wick:** {vw['upper_wick_ratio']:.2%}")
+            st.write(f"**Lower Wick:** {vw['lower_wick_ratio']:.2%}")
+            
+            st.markdown("#### FVG + Fibonacci")
+            ff = signals['microstructure']['fvg_fibonacci']
+            st.write(f"**Sinal:** {ff['signal']}")
+            st.write(f"**Score:** {ff['score']:.1f}")
+            st.write(f"**FVG:** {ff['fvg_type']}")
+            if ff['fib_level']:
+                st.write(f"**Fib 61.8%:** {ff['fib_level']:.2f}")
+        
+        with col2:
+            st.markdown("#### Trapped Traders")
+            tt = signals['microstructure']['trapped_traders']
+            st.write(f"**Sinal:** {tt['signal']}")
+            st.write(f"**Score:** {tt['score']:.1f}")
+            st.write(f"**Longs Presos:** {'Sim' if tt['trapped_long'] else 'Não'}")
+            st.write(f"**Shorts Presos:** {'Sim' if tt['trapped_short'] else 'Não'}")
+            st.write(f"**Força:** {tt['trap_strength']:.2f}x")
+            
+            st.markdown("#### Delta Sintético")
+            sd = signals['microstructure']['synthetic_delta']
+            st.write(f"**Sinal:** {sd['signal']}")
+            st.write(f"**Score:** {sd['score']:.1f}")
+            st.write(f"**Delta:** {sd['delta']:.3f}")
+            st.write(f"**Divergência:** {'Sim' if sd['divergence_detected'] else 'Não'}")
+    
+    # TAB 5: Caos
+    with tab5:
+        st.markdown("### 🌀 Módulo de Caos, Cibernética & Geometria")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Hurst + Bollinger")
+            hb = signals['chaos']['hurst_bollinger']
+            st.write(f"**Sinal:** {hb['signal']}")
+            st.write(f"**Score:** {hb['score']:.1f}")
+            st.write(f"**Hurst:** {hb['hurst']:.3f}")
+            st.write(f"**BB Position:** {hb['bb_position']:.2%}")
+            st.write(f"**Mercado:** {hb['market_type']}")
+            
+            st.markdown("#### COG + Kalman")
+            ck = signals['chaos']['cog_kalman']
+            st.write(f"**Sinal:** {ck['signal']}")
+            st.write(f"**Score:** {ck['score']:.1f}")
+            st.write(f"**COG:** {ck['cog']:.3f}")
+            st.write(f"**Kalman COG:** {ck['kalman_cog']:.3f}")
+        
+        with col2:
+            st.markdown("#### Laguerre RSI")
+            lr = signals['chaos']['laguerre_rsi']
+            st.write(f"**Sinal:** {lr['signal']}")
+            st.write(f"**Score:** {lr['score']:.1f}")
+            st.write(f"**Laguerre RSI:** {lr['laguerre_rsi']:.3f}")
+            
+            st.markdown("#### V-Score (VWAP)")
+            vs = signals['chaos']['vscore_vwap']
+            st.write(f"**Sinal:** {vs['signal']}")
+            st.write(f"**Score:** {vs['score']:.1f}")
+            st.write(f"**VWAP:** {vs['vwap']:.2f}")
+            st.write(f"**V-Score:** {vs['vscore']:.2f}")
+            st.write(f"**Band Position:** {vs['band_position']:.2%}")
+    
+    # TAB 6: Sinais Confirmados
+    with tab6:
+        st.markdown("### 🔒 Sinais Confirmados (Anti-Repaint)")
+        
+        if confirmed_signals:
+            for i, sig in enumerate(reversed(confirmed_signals), 1):
+                col1, col2, col3, col4, col5 = st.columns([1, 2, 2, 2, 2])
+                
+                with col1:
+                    st.markdown(f"**#{i}**")
+                
+                with col2:
+                    badge_html = format_signal_badge(sig['type'])
+                    st.markdown(badge_html, unsafe_allow_html=True)
+                
+                with col3:
+                    st.write(f"💰 R$ {sig['price']:.2f}")
+                
+                with col4:
+                    st.write(f"📊 Score: {sig['score']:.1f}")
+                
+                with col5:
+                    st.write(f"🔐 {sig['hash']}")
+                
+                st.markdown(f"_📅 {sig['timestamp']}_")
+                st.markdown("---")
         else:
-            signal = 'NEUTRAL'
-            score = 20
-        
-        fib_level = fib_618
-        
-    elif bearish_fvg:
-        fvg_type = 'BEARISH'
-        gap_top = low.iloc[-3]
-        gap_bottom = high.iloc[-1]
-        gap_size = (gap_top - gap_bottom) / close.iloc[-1]
-        
-        # Fibonacci 61.8% do gap
-        fib_618 = gap_top - (gap_top - gap_bottom) * 0.618
-        
-        current_price = close.iloc[-1]
-        
-        # Se preço está próximo do fib 61.8% = zona de venda
-        price_near_fib = np.abs(current_price - fib_618) / current_price < 0.01
-        
-        if gap_size > fvg_min_gap and price_near_fib:
-            signal = 'SELL'
-            score = -75
-        elif gap_size > fvg_min_gap:
-            signal = 'SELL'
-            score = -50
-        else:
-            signal = 'NEUTRAL'
-            score = -20
-        
-        fib_level = fib_618
-        
-    else:
-        fvg_type = 'NONE'
-        signal = 'NEUTRAL'
-        score = 0
-        fib_level = None
+            st.info("Aguardando confirmação de sinais...")
     
-    return {
-        'signal': signal,
-        'fvg_detected': fvg_detected,
-        'fvg_type': fvg_type,
-        'fib_level': fib_level,
-        'score': score
-    }
+    # ========== FOOTER ==========
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.caption(f"📅 Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    
+    with col2:
+        st.caption(f"📊 {len(df)} candles • {interval} • {symbol}")
+    
+    with col3:
+        st.caption("🚀 ProfitOne Quantum V8 - All Rights Reserved")
+    
+    # Disclaimer
+    st.markdown("""
+    <div style='background: rgba(255, 68, 68, 0.1); padding: 15px; border-radius: 8px; border-left: 4px solid #ff4444; margin-top: 20px;'>
+        <strong>⚠️ AVISO IMPORTANTE:</strong><br>
+        Este sistema é apenas para fins educacionais e informativos. Não constitui recomendação de investimento.
+        Operar no mercado financeiro envolve riscos. Consulte um profissional qualificado antes de tomar decisões.
+    </div>
+    """, unsafe_allow_html=True)
 
 
-def synthetic_delta_signal(df: pd.DataFrame, delta_period: int = 14) -> dict:
-    """
-    Delta Sintético + Divergência de Preço
-    
-    Delta = diferença entre pressão compradora e vendedora
-    Aproximado por: close - open ponderado por volume
-    
-    Returns:
-        dict com 'signal', 'delta', 'divergence_detected', 'score'
-    """
-    open_price = df['open']
-    close = df['close']
-    volume = df['volume']
-    
-    # Delta sintético
-    # Delta positivo = mais compra, Delta negativo = mais venda
-    delta = (close - open_price) * volume
-    
-    # Acumular delta
-    cumulative_delta = delta.rolling(window=delta_period).sum()
-    
-    # Normalizar
-    avg_volume = volume.rolling(window=delta_period).mean()
-    normalized_delta = cumulative_delta / (avg_volume * delta_period + 1e-10)
-    
-    current_delta = normalized_delta.iloc[-1]
-    
-    # Detectar divergência
-    # Preço fazendo máxima mais alta mas delta fazendo máxima mais baixa = bearish divergence
-    # Preço fazendo mínima mais baixa mas delta fazendo mínima mais alta = bullish divergence
-    
-    price_slope = (close.iloc[-1] - close.iloc[-delta_period]) / close.iloc[-delta_period]
-    delta_slope = (normalized_delta.iloc[-1] - normalized_delta.iloc[-delta_period]) / (np.abs(normalized_delta.iloc[-delta_period]) + 1e-10)
-    
-    # Divergência = sinais opostos
-    bullish_divergence = (price_slope < 0) and (delta_slope > 0)
-    bearish_divergence = (price_slope > 0) and (delta_slope < 0)
-    
-    divergence_detected = bullish_divergence or bearish_divergence
-    
-    # Sinal
-    if bullish_divergence:
-        signal = 'BUY'
-        score = 70
-    elif bearish_divergence:
-        signal = 'SELL'
-        score = -70
-    elif current_delta > 0.5:
-        signal = 'BUY'
-        score = 40
-    elif current_delta < -0.5:
-        signal = 'SELL'
-        score = -40
-    else:
-        signal = 'NEUTRAL'
-        score = current_delta * 50
-    
-    return {
-        'signal': signal,
-        'delta': current_delta,
-        'divergence_detected': divergence_detected,
-        'score': np.clip(score, -100, 100)
-    }
+# ============================================================================
+# EXECUTAR APP
+# ============================================================================
+
+if __name__ == "__main__":
+    main()
