@@ -5,11 +5,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from scipy.stats import entropy
-from scipy.signal import hilbert
+from datetime import datetime, timedelta
 import time
-from datetime import datetime
 
-st.set_page_config(page_title="ProfitOne Ultimate", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="ProfitOne IBOVESPA", layout="wide", page_icon="📊")
 
 # CSS
 st.markdown("""
@@ -42,6 +41,12 @@ st.markdown("""
     @keyframes pulse {
         0%, 100% {transform: scale(1);}
         50% {transform: scale(1.02);}
+    }
+    .history-card {
+        background: linear-gradient(135deg, #1a1d29 0%, #2d3142 100%);
+        padding: 20px;
+        border-radius: 10px;
+        margin: 10px 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -119,19 +124,15 @@ def z_score(data, window=20):
     return (data - mean) / (std + 1e-10)
 
 # ==========================================
-# BUSCAR DADOS (COM TRATAMENTO DE ERRO)
+# BUSCAR DADOS
 # ==========================================
 
-@st.cache_data(ttl=10)
-def get_binance_data(symbol, interval="5m", limit=200):
-    """Buscar dados da Binance (mais confiável)"""
+@st.cache_data(ttl=60)
+def get_ibovespa_data(period="5d", interval="5m"):
+    """Buscar dados do IBOVESPA"""
     try:
-        url = "https://api.binance.com/api/v3/klines"
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/^BVSP"
+        params = {"interval": interval, "range": period}
         
         response = requests.get(url, params=params, timeout=10)
         
@@ -139,39 +140,6 @@ def get_binance_data(symbol, interval="5m", limit=200):
             return None
         
         data = response.json()
-        
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-            'taker_buy_quote', 'ignore'
-        ])
-        
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
-        
-        return df
-    
-    except Exception as e:
-        st.error(f"Erro Binance: {str(e)}")
-        return None
-
-@st.cache_data(ttl=10)
-def get_yahoo_data(symbol, interval="5m"):
-    """Buscar dados Yahoo (backup)"""
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        params = {"interval": interval, "range": "1d"}
-        
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code != 200:
-            return None
-        
-        data = response.json()
-        
         result = data['chart']['result'][0]
         timestamps = result['timestamp']
         quotes = result['indicators']['quote'][0]
@@ -191,37 +159,134 @@ def get_yahoo_data(symbol, interval="5m"):
         return df
     
     except Exception as e:
-        st.error(f"Erro Yahoo: {str(e)}")
+        st.error(f"Erro: {str(e)}")
         return None
+
+# ==========================================
+# CALCULAR SCORE HISTÓRICO
+# ==========================================
+
+def calculate_historical_scores(df):
+    """Calcular scores para todo o histórico"""
+    
+    # Calcular todos os indicadores
+    tema_series, tema_vel = tema(df['close'])
+    kalman_series = kalman_filter(df['close'])
+    entropy_series = shannon_entropy(df['close'])
+    fisher_series = fisher_transform(df['high'], df['low'])
+    hurst_series = hurst_exponent(df['close'])
+    z_score_series = z_score(df['close'])
+    
+    # Criar DataFrame com scores
+    scores = pd.DataFrame(index=df.index)
+    scores['price'] = df['close']
+    scores['score'] = 0.0
+    scores['signal'] = 'NEUTRO'
+    
+    for i in range(len(df)):
+        score = 0
+        count = 0
+        
+        # TEMA Velocity
+        if not pd.isna(tema_vel.iloc[i]):
+            score += 15 if tema_vel.iloc[i] > 0 else -15
+            count += 1
+        
+        # Hurst
+        if not pd.isna(hurst_series.iloc[i]):
+            h = hurst_series.iloc[i]
+            score += 20 if h > 0.5 else -10
+            count += 1
+        
+        # Fisher
+        if not pd.isna(fisher_series.iloc[i]):
+            f = fisher_series.iloc[i]
+            if f > 2:
+                score -= 15
+            elif f < -2:
+                score += 15
+            count += 1
+        
+        # Entropy
+        if not pd.isna(entropy_series.iloc[i]):
+            if entropy_series.iloc[i] < 1.5:
+                score += 10
+            count += 1
+        
+        if count > 0:
+            scores.loc[scores.index[i], 'score'] = score / count
+        
+        # Classificar sinal
+        final_score = scores.loc[scores.index[i], 'score']
+        if final_score > 5:
+            scores.loc[scores.index[i], 'signal'] = 'COMPRA'
+        elif final_score < -5:
+            scores.loc[scores.index[i], 'signal'] = 'VENDA'
+        else:
+            scores.loc[scores.index[i], 'signal'] = 'NEUTRO'
+    
+    return scores
+
+# ==========================================
+# CALCULAR PERFORMANCE
+# ==========================================
+
+def calculate_performance(scores, df):
+    """Calcular acurácia dos sinais"""
+    
+    # Criar cópia do DataFrame
+    performance = scores.copy()
+    performance['next_price'] = df['close'].shift(-1)
+    performance['price_change'] = ((performance['next_price'] - performance['price']) / performance['price'] * 100)
+    
+    # Verificar acertos
+    performance['correct'] = False
+    
+    for i in range(len(performance) - 1):
+        signal = performance['signal'].iloc[i]
+        change = performance['price_change'].iloc[i]
+        
+        if pd.notna(change):
+            if signal == 'COMPRA' and change > 0:
+                performance.loc[performance.index[i], 'correct'] = True
+            elif signal == 'VENDA' and change < 0:
+                performance.loc[performance.index[i], 'correct'] = True
+            elif signal == 'NEUTRO':
+                performance.loc[performance.index[i], 'correct'] = True  # Neutro sempre certo
+    
+    return performance
 
 # ==========================================
 # INTERFACE
 # ==========================================
 
-st.markdown("<h1 style='text-align: center;'>🚀 PROFITONE ULTIMATE</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #888;'>Sistema Completo com 25+ Indicadores Avançados</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>📊 PROFITONE - IBOVESPA</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #888;'>Sistema Completo com Histórico de Performance</p>", unsafe_allow_html=True)
 
 # Sidebar
 st.sidebar.title("⚙️ Configurações")
 
-# Símbolos
-symbol_map = {
-    "₿ BITCOIN": {"binance": "BTCUSDT", "yahoo": "BTC-USD", "use": "binance"},
-    "Ξ ETHEREUM": {"binance": "ETHUSDT", "yahoo": "ETH-USD", "use": "binance"},
-    "^BVSP IBOVESPA": {"binance": None, "yahoo": "^BVSP", "use": "yahoo"},
-    "💵 DÓLAR": {"binance": None, "yahoo": "USDBRL=X", "use": "yahoo"},
-    "S&P 500": {"binance": None, "yahoo": "^GSPC", "use": "yahoo"}
+# Período histórico
+period_map = {
+    "1 dia": "1d",
+    "5 dias": "5d",
+    "1 mês": "1mo",
+    "3 meses": "3mo",
+    "6 meses": "6mo",
+    "1 ano": "1y"
 }
 
-selected = st.sidebar.selectbox("Ativo:", list(symbol_map.keys()))
-symbol_info = symbol_map[selected]
+period_label = st.sidebar.selectbox("Período Histórico:", list(period_map.keys()), index=2)
+period = period_map[period_label]
 
 # Timeframe
 timeframe_map = {
-    "1 minuto": {"binance": "1m", "yahoo": "1m"},
-    "5 minutos": {"binance": "5m", "yahoo": "5m"},
-    "15 minutos": {"binance": "15m", "yahoo": "15m"},
-    "1 hora": {"binance": "1h", "yahoo": "1h"}
+    "1 minuto": "1m",
+    "5 minutos": "5m",
+    "15 minutos": "15m",
+    "30 minutos": "30m",
+    "1 hora": "1h",
+    "1 dia": "1d"
 }
 
 timeframe_label = st.sidebar.selectbox("Timeframe:", list(timeframe_map.keys()), index=1)
@@ -237,24 +302,25 @@ show_entropy = st.sidebar.checkbox("Entropia Shannon", value=True)
 show_fisher = st.sidebar.checkbox("Fisher Transform", value=True)
 show_hurst = st.sidebar.checkbox("Hurst Exponent", value=True)
 
-refresh = st.sidebar.slider("Refresh (seg):", 5, 60, 15, 5)
+# Abas
+tab1, tab2, tab3 = st.tabs(["📊 Tempo Real", "📈 Histórico de Sinais", "📉 Performance"])
 
-# Main
-placeholder = st.empty()
+# ==========================================
+# ABA 1: TEMPO REAL
+# ==========================================
 
-while True:
-    with placeholder.container():
+with tab1:
+    
+    placeholder_live = st.empty()
+    
+    with placeholder_live.container():
         
-        # Buscar dados
-        if symbol_info['use'] == 'binance':
-            df = get_binance_data(symbol_info['binance'], timeframe['binance'])
-        else:
-            df = get_yahoo_data(symbol_info['yahoo'], timeframe['yahoo'])
+        df = get_ibovespa_data(period="1d", interval=timeframe)
         
         if df is not None and len(df) > 50:
             
             now = datetime.now().strftime("%H:%M:%S")
-            st.markdown(f"<p style='text-align: center; color: #888;'>🕐 {now} | ✅ {len(df)} candles carregados</p>", unsafe_allow_html=True)
+            st.markdown(f"<p style='text-align: center; color: #888;'>🕐 {now} | ✅ {len(df)} candles</p>", unsafe_allow_html=True)
             
             # Calcular indicadores
             indicators = {}
@@ -276,7 +342,7 @@ while True:
             
             indicators['z_score'] = z_score(df['close'])
             
-            # SCORE MASTER
+            # SCORE ATUAL
             score = 0
             count = 0
             
@@ -286,10 +352,7 @@ while True:
             
             if 'hurst' in indicators and not pd.isna(indicators['hurst'].iloc[-1]):
                 h = indicators['hurst'].iloc[-1]
-                if h > 0.5:
-                    score += 20
-                else:
-                    score -= 10
+                score += 20 if h > 0.5 else -10
                 count += 1
             
             if 'fisher' in indicators and not pd.isna(indicators['fisher'].iloc[-1]):
@@ -313,14 +376,14 @@ while True:
                 st.markdown(f"""
                 <div class="signal-board signal-up">
                     <div>🚀 COMPRA FORTE</div>
-                    <div style="font-size: 80px; margin-top: 15px;">Score: {score:.1f}</div>
+                    <div style="font-size: 80px; margin-top: 15px;">{score:.1f}</div>
                 </div>
                 """, unsafe_allow_html=True)
             elif score < -5:
                 st.markdown(f"""
                 <div class="signal-board signal-down">
                     <div>📉 VENDA FORTE</div>
-                    <div style="font-size: 80px; margin-top: 15px;">Score: {score:.1f}</div>
+                    <div style="font-size: 80px; margin-top: 15px;">{score:.1f}</div>
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -336,7 +399,7 @@ while True:
             change_pct = ((current - prev) / prev * 100) if prev > 0 else 0
             
             with col1:
-                st.metric("💰 Preço", f"${current:,.2f}", f"{change_pct:+.2f}%")
+                st.metric("💰 IBOVESPA", f"{current:,.0f}", f"{change_pct:+.2f}%")
             
             with col2:
                 if 'hurst' in indicators:
@@ -351,22 +414,20 @@ while True:
             
             with col4:
                 vol = df['volume'].iloc[-1]
-                st.metric("📦 Volume", f"{vol/1e6:.1f}M" if vol > 1e6 else f"{vol:,.0f}")
-            
-            st.markdown("---")
+                st.metric("📦 Volume", f"{vol/1e6:.0f}M")
             
             # GRÁFICO
-            st.subheader(f"📊 {selected}")
+            st.markdown("---")
+            st.subheader("📊 Gráfico em Tempo Real")
             
             fig = make_subplots(
                 rows=3, cols=1,
                 shared_xaxes=True,
                 vertical_spacing=0.02,
                 row_heights=[0.5, 0.25, 0.25],
-                subplot_titles=('Price', 'Oscillators', 'Regime')
+                subplot_titles=('IBOVESPA', 'Oscillators', 'Regime')
             )
             
-            # Candlestick
             fig.add_trace(go.Candlestick(
                 x=df.index,
                 open=df['open'],
@@ -397,11 +458,6 @@ while True:
                 fig.add_hline(y=2, line_dash="dash", line_color="red", row=2, col=1)
                 fig.add_hline(y=-2, line_dash="dash", line_color="green", row=2, col=1)
             
-            fig.add_trace(go.Scatter(
-                x=df.index, y=indicators['z_score'],
-                name='Z-Score', line=dict(color='#ff00ff')
-            ), row=2, col=1)
-            
             if 'hurst' in indicators:
                 fig.add_trace(go.Scatter(
                     x=df.index, y=indicators['hurst'],
@@ -409,17 +465,10 @@ while True:
                 ), row=3, col=1)
                 fig.add_hline(y=0.5, line_dash="dash", line_color="white", row=3, col=1)
             
-            if 'entropy' in indicators:
-                fig.add_trace(go.Scatter(
-                    x=df.index, y=indicators['entropy'],
-                    name='Entropy', line=dict(color='#ffaa00')
-                ), row=3, col=1)
-            
             fig.update_layout(
                 template='plotly_dark',
-                height=900,
+                height=800,
                 xaxis_rangeslider_visible=False,
-                hovermode='x unified',
                 plot_bgcolor='#000000',
                 paper_bgcolor='#000000'
             )
@@ -427,8 +476,141 @@ while True:
             st.plotly_chart(fig, use_container_width=True)
         
         else:
-            st.error("❌ Erro ao carregar dados. Tentando novamente...")
-            st.info("💡 Verifique sua conexão ou tente outro ativo")
+            st.error("❌ Erro ao carregar dados do IBOVESPA")
+
+# ==========================================
+# ABA 2: HISTÓRICO DE SINAIS
+# ==========================================
+
+with tab2:
     
-    time.sleep(refresh)
-    st.rerun()
+    st.subheader("📈 Histórico de Sinais e Scores")
+    
+    df_hist = get_ibovespa_data(period=period, interval=timeframe)
+    
+    if df_hist is not None and len(df_hist) > 50:
+        
+        with st.spinner("Calculando histórico..."):
+            scores_hist = calculate_historical_scores(df_hist)
+        
+        st.success(f"✅ {len(scores_hist)} pontos analisados no período de {period_label}")
+        
+        # Gráfico de Score histórico
+        fig_hist = go.Figure()
+        
+        fig_hist.add_trace(go.Scatter(
+            x=scores_hist.index,
+            y=scores_hist['score'],
+            mode='lines',
+            name='Score',
+            line=dict(color='#00d9ff', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(0, 217, 255, 0.2)'
+        ))
+        
+        fig_hist.add_hline(y=5, line_dash="dash", line_color="green", annotation_text="Zona de Compra")
+        fig_hist.add_hline(y=-5, line_dash="dash", line_color="red", annotation_text="Zona de Venda")
+        fig_hist.add_hline(y=0, line_dash="dot", line_color="white")
+        
+        fig_hist.update_layout(
+            template='plotly_dark',
+            height=500,
+            title="Evolução do Score Master ao Longo do Tempo",
+            yaxis_title="Score",
+            plot_bgcolor='#000000',
+            paper_bgcolor='#000000'
+        )
+        
+        st.plotly_chart(fig_hist, use_container_width=True)
+        
+        # Tabela de sinais recentes
+        st.markdown("---")
+        st.subheader("📋 Últimos 50 Sinais")
+        
+        display_hist = scores_hist[['price', 'score', 'signal']].tail(50).copy()
+        display_hist['price'] = display_hist['price'].apply(lambda x: f"{x:,.0f}")
+        display_hist['score'] = display_hist['score'].apply(lambda x: f"{x:+.1f}")
+        
+        st.dataframe(display_hist, use_container_width=True)
+    
+    else:
+        st.error("❌ Erro ao carregar histórico")
+
+# ==========================================
+# ABA 3: PERFORMANCE
+# ==========================================
+
+with tab3:
+    
+    st.subheader("📉 Análise de Performance")
+    
+    df_perf = get_ibovespa_data(period=period, interval=timeframe)
+    
+    if df_perf is not None and len(df_perf) > 50:
+        
+        with st.spinner("Analisando performance..."):
+            scores_perf = calculate_historical_scores(df_perf)
+            performance = calculate_performance(scores_perf, df_perf)
+        
+        # Estatísticas
+        total_signals = len(performance[performance['signal'] != 'NEUTRO'])
+        correct_signals = performance['correct'].sum()
+        accuracy = (correct_signals / len(performance) * 100) if len(performance) > 0 else 0
+        
+        # Cards de estatísticas
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📊 Total de Sinais", f"{total_signals}")
+        
+        with col2:
+            st.metric("✅ Sinais Corretos", f"{correct_signals}")
+        
+        with col3:
+            st.metric("🎯 Acurácia", f"{accuracy:.1f}%")
+        
+        with col4:
+            compras = len(performance[performance['signal'] == 'COMPRA'])
+            vendas = len(performance[performance['signal'] == 'VENDA'])
+            st.metric("⚖️ Compras/Vendas", f"{compras}/{vendas}")
+        
+        st.markdown("---")
+        
+        # Distribuição de sinais
+        st.subheader("📊 Distribuição de Sinais")
+        
+        signal_counts = performance['signal'].value_counts()
+        
+        fig_pie = go.Figure(data=[go.Pie(
+            labels=signal_counts.index,
+            values=signal_counts.values,
+            marker=dict(colors=['#00ff88', '#ff4444', '#ffaa00']),
+            textinfo='label+percent'
+        )])
+        
+        fig_pie.update_layout(
+            template='plotly_dark',
+            height=400,
+            paper_bgcolor='#000000'
+        )
+        
+        st.plotly_chart(fig_pie, use_container_width=True)
+        
+        # Tabela detalhada
+        st.markdown("---")
+        st.subheader("📋 Detalhamento (últimos 100)")
+        
+        display_perf = performance[['price', 'score', 'signal', 'price_change', 'correct']].tail(100).copy()
+        display_perf['price'] = display_perf['price'].apply(lambda x: f"{x:,.0f}")
+        display_perf['score'] = display_perf['score'].apply(lambda x: f"{x:+.1f}")
+        display_perf['price_change'] = display_perf['price_change'].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "-")
+        display_perf['correct'] = display_perf['correct'].apply(lambda x: "✅" if x else "❌")
+        
+        st.dataframe(display_perf, use_container_width=True)
+    
+    else:
+        st.error("❌ Erro ao carregar dados para análise")
+
+# Footer
+st.markdown("---")
+st.markdown("<div style='text-align: center; color: #444;'>📊 ProfitOne IBOVESPA | Sistema Profissional de Trading</div>", unsafe_allow_html=True)
