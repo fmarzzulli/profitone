@@ -4,15 +4,14 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
-import json
 import warnings
 warnings.filterwarnings('ignore')
 
 # ========================= CONFIG =========================
 st.set_page_config(
-    page_title="ProfitOne Quantum V7",
+    page_title="ProfitOne Quantum V6",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -39,20 +38,21 @@ st.markdown("""
         font-weight: bold;
         text-align: center;
         font-size: 1.2rem;
+        margin: 10px 0;
     }
-    .buy { background: #00ff88; color: #000; }
-    .sell { background: #ff4444; color: #fff; }
-    .neutral { background: #888; color: #fff; }
+    .buy { background: linear-gradient(135deg, #00ff88, #00cc66); color: #000; }
+    .sell { background: linear-gradient(135deg, #ff4444, #cc0000); color: #fff; }
+    .neutral { background: linear-gradient(135deg, #888, #666); color: #fff; }
 </style>
 """, unsafe_allow_html=True)
 
 # ========================= FUNCTIONS =========================
 def calculate_ema(prices, period):
-    """Calcula EMA usando pandas"""
+    """Calcula EMA (Exponential Moving Average)"""
     return prices.ewm(span=period, adjust=False).mean()
 
 def calculate_rsi(prices, period=14):
-    """Calcula RSI"""
+    """Calcula RSI (Relative Strength Index)"""
     if len(prices) < period + 1:
         return 50.0
     
@@ -65,10 +65,11 @@ def calculate_rsi(prices, period=14):
     
     rs = avg_gain / (avg_loss + 1e-10)
     rsi = 100 - (100 / (1 + rs))
+    
     return rsi.iloc[-1] if len(rsi) > 0 else 50.0
 
 def quantum_score(df):
-    """Calcula score quântico baseado em EMA e RSI"""
+    """Calcula Quantum Score baseado em múltiplos indicadores"""
     if len(df) < 21:
         return 0.0
     
@@ -78,24 +79,26 @@ def quantum_score(df):
     current = close.iloc[-1]
     rsi = calculate_rsi(close, 14)
     
-    # Tendência
-    trend = 50 if ema9 > ema21 else -50
+    # Componente de tendência
+    trend_score = 50 if ema9 > ema21 else -50
     
-    # Momentum
-    momentum = (rsi - 50)
+    # Componente de momentum (RSI)
+    momentum_score = (rsi - 50)
     
-    # Score final
-    score = trend + momentum
-    return np.clip(score, -100, 100)
+    # Score final combinado
+    final_score = trend_score + momentum_score
+    
+    return np.clip(final_score, -100, 100)
 
 class AntiRepaint:
-    """Motor anti-repaint com confirmação de barras"""
+    """Motor Anti-Repaint com confirmação de barras"""
+    
     def __init__(self, confirmation_bars=2):
         self.signals = []
         self.confirmation_bars = confirmation_bars
     
     def add_signal(self, timestamp, signal_type, price, score):
-        """Adiciona novo sinal"""
+        """Adiciona um novo sinal ao sistema"""
         signal_hash = hashlib.sha256(
             f"{timestamp}{signal_type}{price}".encode()
         ).hexdigest()[:8]
@@ -111,7 +114,7 @@ class AntiRepaint:
         })
     
     def update_signals(self):
-        """Atualiza e confirma sinais"""
+        """Atualiza e confirma sinais baseado no número de barras"""
         for sig in self.signals:
             if not sig['confirmed']:
                 sig['bars_held'] += 1
@@ -124,9 +127,8 @@ class AntiRepaint:
 
 @st.cache_data(ttl=60)
 def get_data(symbol, interval='5m'):
-    """Busca dados do Yahoo Finance"""
+    """Busca dados de mercado do Yahoo Finance"""
     try:
-        # Mapeamento de intervalos
         interval_map = {
             '5m': '5m',
             '15m': '15m',
@@ -134,17 +136,15 @@ def get_data(symbol, interval='5m'):
         }
         yf_interval = interval_map.get(interval, '5m')
         
-        # URL da API do Yahoo Finance
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         params = {
             'interval': yf_interval,
-            'range': '5d'  # 5 dias de dados
+            'range': '1mo'
         }
         
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
-        # Extrair dados
         result = data['chart']['result'][0]
         timestamps = result['timestamp']
         quote = result['indicators']['quote'][0]
@@ -158,13 +158,11 @@ def get_data(symbol, interval='5m'):
             'volume': quote['volume']
         })
         
-        # Remove valores nulos
         df = df.dropna()
-        
         return df
     
     except Exception as e:
-        st.error(f"Erro ao buscar dados: {str(e)}")
+        st.error(f"❌ Erro ao buscar dados: {str(e)}")
         return pd.DataFrame()
 
 # ========================= MAIN APP =========================
@@ -189,26 +187,26 @@ def main():
         "Barras de Confirmação",
         min_value=1,
         max_value=5,
-        value=2
+        value=2,
+        help="Número de barras necessárias para confirmar um sinal"
     )
     
-    auto_refresh = st.sidebar.number_input(
-        "Auto-refresh (segundos)",
-        min_value=10,
-        max_value=300,
-        value=30
-    )
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📊 Legenda")
+    st.sidebar.markdown("🟢 **COMPRA**: Score > 30")
+    st.sidebar.markdown("🔴 **VENDA**: Score < -30")
+    st.sidebar.markdown("⚪ **NEUTRO**: -30 ≤ Score ≤ 30")
     
-    # Header
-    st.title("🚀 ProfitOne Quantum V7")
-    st.markdown("**Motor Anti-Repaint | Quantum Score | Real-Time Analysis**")
+    # Header Principal
+    st.title("🚀 ProfitOne Quantum V6")
+    st.markdown("**Motor Anti-Repaint | Análise Quântica | Dados em Tempo Real**")
     
     # Carrega dados
-    symbol = "^BVSP"  # Ibovespa
+    symbol = "^BVSP"
     df = get_data(symbol, interval)
     
     if df.empty or len(df) < 50:
-        st.error("❌ Dados insuficientes. Aguarde alguns minutos e recarregue.")
+        st.error("❌ Dados insuficientes. Aguarde e recarregue a página.")
         return
     
     # Calcula indicadores
@@ -223,18 +221,23 @@ def main():
     if score > 30:
         signal = "COMPRA"
         signal_class = "buy"
+        signal_emoji = "🟢"
     elif score < -30:
         signal = "VENDA"
         signal_class = "sell"
+        signal_emoji = "🔴"
     else:
         signal = "NEUTRO"
         signal_class = "neutral"
+        signal_emoji = "⚪"
     
-    # Anti-repaint
+    # Sistema Anti-Repaint
     if 'anti_repaint' not in st.session_state:
         st.session_state.anti_repaint = AntiRepaint(confirmation_bars)
     
     ar = st.session_state.anti_repaint
+    ar.confirmation_bars = confirmation_bars
+    
     ar.add_signal(
         df['timestamp'].iloc[-1],
         signal,
@@ -243,29 +246,46 @@ def main():
     )
     ar.update_signals()
     
-    # Métricas
-    col1, col2, col3 = st.columns(3)
+    # Métricas Principais
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("📊 Quantum Score", f"{score:.1f}", delta=None)
+        st.metric(
+            label="📊 Quantum Score",
+            value=f"{score:.1f}",
+            delta=None
+        )
     
     with col2:
-        st.metric("🎯 RSI", f"{rsi:.1f}", delta=None)
+        st.metric(
+            label="🎯 RSI (14)",
+            value=f"{rsi:.1f}",
+            delta=None
+        )
     
     with col3:
+        st.metric(
+            label="💰 Preço Atual",
+            value=f"R$ {current_price:,.2f}",
+            delta=None
+        )
+    
+    with col4:
         st.markdown(f"""
         <div class="signal-badge {signal_class}">
-            {signal}
+            {signal_emoji} {signal}
         </div>
         """, unsafe_allow_html=True)
     
-    # Gráfico
+    # Gráfico Principal
+    st.markdown("---")
+    
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.05,
         row_heights=[0.7, 0.3],
-        subplot_titles=("Candlestick + EMAs", "Quantum Score")
+        subplot_titles=("📈 Candlestick + EMAs", "📊 Quantum Score")
     )
     
     # Candlestick
@@ -276,12 +296,14 @@ def main():
             high=df['high'],
             low=df['low'],
             close=df['close'],
-            name="Price"
+            name="Preço",
+            increasing_line_color='#00ff88',
+            decreasing_line_color='#ff4444'
         ),
         row=1, col=1
     )
     
-    # EMAs
+    # EMA 9
     fig.add_trace(
         go.Scatter(
             x=df['timestamp'],
@@ -292,6 +314,7 @@ def main():
         row=1, col=1
     )
     
+    # EMA 21
     fig.add_trace(
         go.Scatter(
             x=df['timestamp'],
@@ -302,52 +325,72 @@ def main():
         row=1, col=1
     )
     
-    # Quantum Score (calculado para cada barra)
-    scores = [quantum_score(df.iloc[:i+1]) for i in range(20, len(df))]
+    # Quantum Score ao longo do tempo
+    scores = []
+    for i in range(21, len(df)):
+        s = quantum_score(df.iloc[:i+1])
+        scores.append(s)
     
     fig.add_trace(
         go.Scatter(
-            x=df['timestamp'].iloc[20:],
+            x=df['timestamp'].iloc[21:],
             y=scores,
             name="Quantum Score",
-            line=dict(color='magenta', width=2)
+            line=dict(color='magenta', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(255,0,255,0.1)'
         ),
         row=2, col=1
     )
     
-    # Linhas de referência
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    fig.add_hline(y=-30, line_dash="dash", line_color="red", row=2, col=1)
+    # Linhas de referência no Quantum Score
+    fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
+    fig.add_hline(y=-30, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.3, row=2, col=1)
     
     fig.update_layout(
         template="plotly_dark",
         height=700,
         showlegend=True,
-        xaxis_rangeslider_visible=False
+        xaxis_rangeslider_visible=False,
+        hovermode='x unified'
     )
+    
+    fig.update_xaxes(title_text="Tempo", row=2, col=1)
+    fig.update_yaxes(title_text="Preço (R$)", row=1, col=1)
+    fig.update_yaxes(title_text="Score", row=2, col=1)
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Sinais confirmados
+    # Sinais Confirmados
+    st.markdown("---")
     st.subheader("✅ Sinais Confirmados (Anti-Repaint)")
+    
     confirmed = ar.get_confirmed()
     
     if confirmed:
-        for sig in confirmed[-5:]:  # Últimos 5
+        for sig in reversed(confirmed[-10:]):
+            color = "#00ff88" if sig['type'] == "COMPRA" else "#ff4444" if sig['type'] == "VENDA" else "#888888"
             st.markdown(f"""
-            **{sig['type']}** | {sig['timestamp']} | R$ {sig['price']:.2f} | Score: {sig['score']:.1f} | Hash: `{sig['hash']}`
-            """)
+            <div style='background: linear-gradient(90deg, {color}22, transparent); 
+                        padding: 10px; border-left: 4px solid {color}; margin: 5px 0; border-radius: 5px;'>
+                <strong style='color: {color};'>{sig['type']}</strong> | 
+                {sig['timestamp'].strftime('%d/%m/%Y %H:%M')} | 
+                R$ {sig['price']:,.2f} | 
+                Score: {sig['score']:.1f} | 
+                Hash: <code>{sig['hash']}</code>
+            </div>
+            """, unsafe_allow_html=True)
     else:
-        st.info("Nenhum sinal confirmado ainda.")
+        st.info("⏳ Aguardando confirmação de sinais...")
     
     # Footer
     st.markdown("---")
-    st.caption(f"⏰ Última atualização: {datetime.now().strftime('%H:%M:%S')} | ⚠️ Apenas para fins educacionais.")
-    
-    # Auto-refresh
-    import time
-    time.sleep(auto_refresh)
-    st.rerun()
+    st.caption(
+        f"⏰ Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} | "
+        f"📊 {len(df)} barras | "
+        f"⚠️ Apenas para fins educacionais - Não é recomendação de investimento"
+    )
 
 if __name__ == "__main__":
     main()
