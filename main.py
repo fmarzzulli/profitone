@@ -1028,7 +1028,7 @@ def main():
                 plot_bgcolor='rgba(15,12,41,0.8)'
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width='stretch')
         
         else:
             st.error("❌ Dados insuficientes")
