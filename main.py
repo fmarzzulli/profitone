@@ -48,7 +48,7 @@ st.sidebar.info("💡 Selecione diferentes ativos e períodos para análise")
 # Função para carregar dados
 @st.cache_data(ttl=300)
 def load_data(ticker, per, intv):
-    try:
+    try: 
         data = yf.Ticker(ticker)
         df = data.history(period=per, interval=intv)
         return df
