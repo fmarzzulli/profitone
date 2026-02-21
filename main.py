@@ -360,7 +360,7 @@ def main():
     fig.update_yaxes(title_text="Preço (R$)", row=1, col=1)
     fig.update_yaxes(title_text="Score", row=2, col=1)
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # Sinais Confirmados
     st.markdown("---")
