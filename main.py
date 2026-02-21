@@ -1,157 +1,201 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import yfinance as yf
-from scipy.stats import entropy, linregress
-from scipy.signal import hilbert
+import plotly.graph_objects as go
 
+# Configuração da página
 st.set_page_config(page_title="ProfitOne Trading", layout="wide", page_icon="📈")
 
 # CSS Tema Escuro
 st.markdown("""
 <style>
-.main {background-color: #0e1117;}
-h1, h2, h3 {color: #00d9ff;}
+    .main {background-color: #0e1117;}
+    h1, h2, h3 {color: #00d9ff;}
+    .stMetric {background-color: #1a1d29; padding: 15px; border-radius: 10px;}
 </style>
 """, unsafe_allow_html=True)
 
 # Título
-st.title("📈 PROFITONE - Sistema Avançado de Trading")
-st.markdown("### *Matemática Ultra-Avançada para Trading Profissional*")
+st.title("📈 PROFITONE - Sistema de Trading")
+st.markdown("### *Análise Profissional de Mercado*")
 
 # Sidebar
 st.sidebar.title("⚙️ Configurações")
-symbol = st.sidebar.selectbox("Ativo", ["^BVSP", "BRL=X", "BTC-USD", "ETH-USD"])
-period = st.sidebar.selectbox("Período", ["1d", "5d", "1mo", "3mo", "6mo"], index=2)
-interval = st.sidebar.selectbox("Intervalo", ["1m", "5m", "15m", "1h", "1d"], index=3)
+st.sidebar.markdown("---")
 
-# Indicadores
-show_tema = st.sidebar.checkbox("TEMA + Velocity", value=True)
-show_entropy = st.sidebar.checkbox("Entropia Shannon", value=True)
-show_fisher = st.sidebar.checkbox("Fisher Transform", value=True)
-show_hurst = st.sidebar.checkbox("Hurst Exponent", value=True)
+symbol = st.sidebar.selectbox(
+    "Selecione o Ativo:",
+    ["^BVSP", "BRL=X", "BTC-USD", "ETH-USD", "AAPL", "TSLA"],
+    index=0
+)
 
-# Download dados
-@st.cache_data
-def load_data(sym, per, intv):
+period = st.sidebar.selectbox(
+    "Período:",
+    ["1d", "5d", "1mo", "3mo", "6mo", "1y"],
+    index=2
+)
+
+interval = st.sidebar.selectbox(
+    "Intervalo:",
+    ["1m", "5m", "15m", "30m", "1h", "1d"],
+    index=4
+)
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 Selecione diferentes ativos e períodos para análise")
+
+# Função para carregar dados
+@st.cache_data(ttl=300)
+def load_data(ticker, per, intv):
     try:
-        df = yf.Ticker(sym).history(period=per, interval=intv)
-        df.columns = [c.lower() for c in df.columns]
+        data = yf.Ticker(ticker)
+        df = data.history(period=per, interval=intv)
         return df
-    except:
-        return pd.DataFrame()
-
-# Indicadores
-def tema(close, period=20):
-    ema1 = close.ewm(span=period).mean()
-    ema2 = ema1.ewm(span=period).mean()
-    ema3 = ema2.ewm(span=period).mean()
-    return 3 * ema1 - 3 * ema2 + ema3
-
-def shannon_entropy(close, window=20):
-    def calc_entropy(x):
-        if len(x) < 2: return 0
-        returns = np.diff(x)
-        hist, _ = np.histogram(returns, bins=10, density=True)
-        hist = hist[hist > 0]
-        return entropy(hist, base=2)
-    return close.rolling(window).apply(calc_entropy, raw=False)
-
-def fisher_transform(high, low, period=10):
-    hl2 = (high + low) / 2
-    max_h = hl2.rolling(period).max()
-    min_l = hl2.rolling(period).min()
-    value = 2 * ((hl2 - min_l) / (max_h - min_l + 1e-10) - 0.5)
-    value = value.clip(-0.999, 0.999)
-    return 0.5 * np.log((1 + value) / (1 - value + 1e-10))
-
-def hurst_exponent(data, window=100):
-    def calc_hurst(ts):
-        if len(ts) < 10: return 0.5
-        lags = range(2, min(20, len(ts)//2))
-        tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
-        return np.polyfit(np.log(lags), np.log(tau), 1)[0]
-    return data.rolling(window).apply(calc_hurst, raw=False)
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {str(e)}")
+        return None
 
 # Carregar dados
-with st.spinner("📥 Carregando dados..."):
+with st.spinner("📥 Carregando dados do mercado..."):
     df = load_data(symbol, period, interval)
 
-if df.empty:
-    st.error("❌ Erro ao carregar dados")
-    st.stop()
+if df is not None and not df.empty:
+    
+    # Métricas principais
+    col1, col2, col3, col4 = st.columns(4)
+    
+    current_price = df['Close'].iloc[-1]
+    prev_price = df['Close'].iloc[-2]
+    price_change = current_price - prev_price
+    price_change_pct = (price_change / prev_price) * 100
+    
+    volume = df['Volume'].iloc[-1]
+    high_24h = df['High'].max()
+    low_24h = df['Low'].min()
+    
+    with col1:
+        st.metric(
+            label="💰 Preço Atual",
+            value=f"${current_price:.2f}",
+            delta=f"{price_change_pct:+.2f}%"
+        )
+    
+    with col2:
+        st.metric(
+            label="📊 Volume",
+            value=f"{volume:,.0f}"
+        )
+    
+    with col3:
+        st.metric(
+            label="📈 Máxima",
+            value=f"${high_24h:.2f}"
+        )
+    
+    with col4:
+        st.metric(
+            label="📉 Mínima",
+            value=f"${low_24h:.2f}"
+        )
+    
+    st.markdown("---")
+    
+    # Gráfico de Candlestick
+    st.subheader("📊 Gráfico de Candlestick")
+    
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name='OHLC',
+        increasing_line_color='#00ff88',
+        decreasing_line_color='#ff4444'
+    )])
+    
+    fig.update_layout(
+        template='plotly_dark',
+        height=600,
+        xaxis_title='Data/Hora',
+        yaxis_title='Preço (USD)',
+        hovermode='x unified',
+        xaxis_rangeslider_visible=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Gráfico de Volume
+    st.subheader("📊 Volume de Negociação")
+    
+    colors = ['#00ff88' if df['Close'].iloc[i] > df['Open'].iloc[i] else '#ff4444' 
+              for i in range(len(df))]
+    
+    fig_volume = go.Figure(data=[go.Bar(
+        x=df.index,
+        y=df['Volume'],
+        marker_color=colors,
+        name='Volume'
+    )])
+    
+    fig_volume.update_layout(
+        template='plotly_dark',
+        height=300,
+        xaxis_title='Data/Hora',
+        yaxis_title='Volume',
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig_volume, use_container_width=True)
+    
+    # Estatísticas
+    st.markdown("---")
+    st.subheader("📈 Estatísticas do Período")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.write("**📊 Variação:**")
+        st.write(f"Abertura: ${df['Open'].iloc[0]:.2f}")
+        st.write(f"Fechamento: ${df['Close'].iloc[-1]:.2f}")
+        total_change = ((df['Close'].iloc[-1] - df['Open'].iloc[0]) / df['Open'].iloc[0]) * 100
+        st.write(f"Variação Total: {total_change:+.2f}%")
+    
+    with col2:
+        st.write("**📉 Volatilidade:**")
+        volatility = df['Close'].pct_change().std() * 100
+        st.write(f"Desvio Padrão: {volatility:.2f}%")
+        st.write(f"Amplitude: ${high_24h - low_24h:.2f}")
+    
+    with col3:
+        st.write("**📊 Volume:**")
+        avg_volume = df['Volume'].mean()
+        st.write(f"Média: {avg_volume:,.0f}")
+        st.write(f"Total: {df['Volume'].sum():,.0f}")
+    
+    # Tabela de dados recentes
+    with st.expander("📋 Ver Dados Detalhados"):
+        st.dataframe(
+            df.tail(20).style.format({
+                'Open': '${:.2f}',
+                'High': '${:.2f}',
+                'Low': '${:.2f}',
+                'Close': '${:.2f}',
+                'Volume': '{:,.0f}'
+            }),
+            use_container_width=True
+        )
 
-# Calcular indicadores
-indicators = {}
-if show_tema:
-    indicators['tema'] = tema(df['close'])
-if show_entropy:
-    indicators['entropy'] = shannon_entropy(df['close'])
-if show_fisher:
-    indicators['fisher'] = fisher_transform(df['high'], df['low'])
-if show_hurst:
-    indicators['hurst'] = hurst_exponent(df['close'])
+else:
+    st.error("❌ Não foi possível carregar os dados. Tente outro ativo ou período.")
+    st.info("💡 Dica: Alguns ativos podem não ter dados para intervalos muito curtos (como 1m)")
 
-# Métricas
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Preço Atual", f"${df['close'].iloc[-1]:.2f}")
-with col2:
-    pct = ((df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100)
-    st.metric("Mudança %", f"{pct:+.2f}%")
-with col3:
-    if show_hurst:
-        h = indicators['hurst'].iloc[-1]
-        regime = "Tendência 📈" if h > 0.5 else "Lateral 📊"
-        st.metric("Regime", regime)
-with col4:
-    if show_entropy:
-        st.metric("Entropia", f"{indicators['entropy'].iloc[-1]:.2f}")
-
-# Gráfico
-fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-                    row_heights=[0.5, 0.25, 0.25],
-                    subplot_titles=('Price Action', 'Oscillators', 'Entropy & Hurst'))
-
-# Candlestick
-fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'],
-                             low=df['low'], close=df['close'], name='OHLC',
-                             increasing_line_color='#00ff88',
-                             decreasing_line_color='#ff4444'), row=1, col=1)
-
-if show_tema:
-    fig.add_trace(go.Scatter(x=df.index, y=indicators['tema'], name='TEMA',
-                            line=dict(color='#00d9ff', width=2)), row=1, col=1)
-
-# Volume
-colors = ['#00ff88' if df['close'].iloc[i] > df['open'].iloc[i] else '#ff4444'
-          for i in range(len(df))]
-fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume',
-                     marker_color=colors, showlegend=False), row=2, col=1)
-
-# Fisher
-if show_fisher:
-    fig.add_trace(go.Scatter(x=df.index, y=indicators['fisher'], name='Fisher',
-                            line=dict(color='#00d9ff')), row=2, col=1)
-    fig.add_hline(y=2, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=-2, line_dash="dash", line_color="green", row=2, col=1)
-
-# Entropy & Hurst
-if show_entropy:
-    fig.add_trace(go.Scatter(x=df.index, y=indicators['entropy'], name='Entropy',
-                            line=dict(color='#ffaa00')), row=3, col=1)
-if show_hurst:
-    fig.add_trace(go.Scatter(x=df.index, y=indicators['hurst'], name='Hurst',
-                            line=dict(color='#00ff88')), row=3, col=1)
-    fig.add_hline(y=0.5, line_dash="dash", line_color="white", row=3, col=1)
-
-fig.update_layout(template='plotly_dark', height=900, showlegend=True,
-                  xaxis_rangeslider_visible=False, hovermode='x unified')
-
-st.plotly_chart(fig, use_container_width=True)
-
-# Dados
-with st.expander("📊 Dados Recentes"):
-    st.dataframe(df.tail(20))
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    <p>🚀 ProfitOne Trading System | Dados fornecidos por Yahoo Finance</p>
+    <p>⚠️ Este sistema é para fins educacionais. Trading envolve risco.</p>
+</div>
+""", unsafe_allow_html=True)
