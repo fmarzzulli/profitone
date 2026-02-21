@@ -115,7 +115,7 @@ while True:
             current_price = df['Close'].iloc[-1]
             prev_price = df['Close'].iloc[-2] if len(df) > 1 else current_price
             price_change = current_price - prev_price
-            price_change_pct = (price_change / prev_price) * 100 if prev_price != 0 else 0
+price_change_pct = (price_change / prev_price) * 100 if prev_price != 0 else 0
             
             # Abrir do dia
             open_price = df['Open'].iloc[0]
